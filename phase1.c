@@ -52,17 +52,36 @@ unsigned int nextPid = SENTINELPID;
 void startup()
 {
     int result; // value returned by call to fork1()
-
+    int i;
     // initialize the process table
     if (DEBUG && debugflag)
         USLOSS_Console("startup(): initializing process table, ProcTable[]\n");
-
+      for(i = 0; i < MAXPROC; i++)
+      {
+        ProcTable[i].status = 00;
+      }
     // Initialize the Ready list, etc.
     if (DEBUG && debugflag)
         USLOSS_Console("startup(): initializing the Ready list\n");
     ReadyList = NULL;
+    /* Ready list can be a single queue with all the priorities or multiple queues one
+    for each priority.  I think the multiple quesues with one priority each will be
+    easier.  Something he said on Friday made me think that but dont remember what*/
+    
+    //Shaky implementation can be improved
+    procStruct pQueues[6][MAXPROC];
+    int j;
+    for(i = 0; i < 6; i++)
+    {
+      for(j = 0; j < MAXPROC; j++)
+      {
+        pQueues[i][j].status = 0;
+      }
+    }
 
+    ReadyList = *pQueues;//Ready list pointing at p1 queue
     // Initialize the clock interrupt handler
+
 
     // startup a sentinel process
     if (DEBUG && debugflag)
@@ -127,18 +146,37 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
         USLOSS_Console("fork1(): creating process %s\n", name);
 
     // test if in kernel mode; halt if in user mode
-
+    if(USLOSS_PsrGet() == 0x0)
+      USLOSS_Halt(1);
     // Return if stack size is too small
-
+      if(stacksize < USLOSS_MIN_STACK)
+        return -2;
     // find an empty slot in the process table
+      /*
+        We set i to be <= so we can get one extra iteration in the loop
+        that way we can see if i == maxproc then all the spots are full
+        and before we check the status of the table we can just return -1
+      */
+      int i;
+     for(i = 0; i <= MAXPROC; i++)
+     {
+      if(i == MAXPROC)//if i == maxproc no empty slots go ahead and return error
+        return -1;
+      if(ProcTable[i].status == 00)
+      {
+        //Insert New Process
+        procSlot = i;
+        break;
+      }
+     }//end of procTable loop
 
     // fill-in entry in process table */
     if ( strlen(name) >= (MAXNAME - 1) ) {
         USLOSS_Console("fork1(): Process name is too long.  Halting...\n");
         USLOSS_Halt(1);
     }
-    strcpy(ProcTable[procSlot].name, name);
-    ProcTable[procSlot].startFunc = startFunc;
+    strcpy(ProcTable[procSlot].name, name);//name
+    ProcTable[procSlot].startFunc = startFunc;//start function
     if ( arg == NULL )
         ProcTable[procSlot].startArg[0] = '\0';
     else if ( strlen(arg) >= (MAXARG - 1) ) {
@@ -146,10 +184,20 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
         USLOSS_Halt(1);
     }
     else
-        strcpy(ProcTable[procSlot].startArg, arg);
-
+        strcpy(ProcTable[procSlot].startArg, arg);//arg
+    ProcTable[procSlot].stackSize = stacksize;
+    ProcTable[procSlot].stack = malloc(stacksize * sizeof(char));
+    //gotta walk the ready list and set the previous proc, next proc ptr to this proc
+    //ProcTable[procSlot].nextProcPtr;
+    //ProcTable[procSlot].childProcPtr;
+    //ProcTable[procSlot].nextSiblingPtr;
+    ProcTable[procSlot].pid = procSlot % MAXPROC;
+    ProcTable[procSlot].priority = priority;
+    ProcTable[procSlot].status = 1;//status is it ready(1) at start up?
+    
     // Initialize context for this process, but use launch function pointer for
     // the initial value of the process's program counter (PC)
+
 
     USLOSS_ContextInit(&(ProcTable[procSlot].state), USLOSS_PsrGet(),
                        ProcTable[procSlot].stack,
@@ -159,9 +207,9 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
     // for future phase(s)
     p1_fork(ProcTable[procSlot].pid);
 
-    // More stuff to do here...
+    // More stuff to do here... Dispatcher? Ready list? Launch?
 
-    return -1;  // -1 is not correct! Here to prevent warning.
+    return ProcTable[procSlot].pid;  // -1 is not correct! Here to prevent warning. should be PID of child
 } /* fork1 */
 
 /* ------------------------------------------------------------------------
@@ -180,7 +228,7 @@ void launch()
         USLOSS_Console("launch(): started\n");
 
     // Enable interrupts
-
+      //PSRget() again enable one of the bits
     // Call the function passed to fork1, and capture its return value
     result = Current->startFunc(Current->startArg);
 
@@ -237,7 +285,7 @@ void quit(int status)
    ----------------------------------------------------------------------- */
 void dispatcher(void)
 {
-    procPtr nextProcess = NULL;
+    procPtr nextProcess = NULL;//next process in ready list
 
     p1_switch(Current->pid, nextProcess->pid);
 } /* dispatcher */
