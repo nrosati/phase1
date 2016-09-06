@@ -35,7 +35,6 @@ static procPtr ReadyList[6];
 
 // current process ID
 procPtr Current;
-
 // the next pid to be assigned
 unsigned int nextPid = SENTINELPID;
 
@@ -58,7 +57,7 @@ void startup()
         USLOSS_Console("startup(): initializing process table, ProcTable[]\n");
       for(i = 0; i < MAXPROC; i++)
       {
-        ProcTable[i].status = 00;
+        ProcTable[i].status = 00;//Initialized status
       }
     // Initialize the Ready list, etc.
     if (DEBUG && debugflag)
@@ -320,21 +319,32 @@ void dispatcher(void)
       {
         //The next process should be pointed to by the ReadyList[i]
         nextProcess = ReadyList[i];
-        //Have to update the ReadyList here too ie move everyone up one slot
+        USLOSS_Console("Process found pid: %d\n", nextProcess->pid);
+        //Move to next item on ReadyList
+        ReadyList[i] = ReadyList[i]->nextProcPtr;
         break;
       }
     }
-    /*
-      If Current isnt set to something, then p1_switch causes seg fault
-      */
+
     if(Current == NULL)
     {
-      Current = ReadyList[i];
+      USLOSS_Console("Current is Null setting to nextProcess\n");
+      Current = nextProcess;
+      USLOSS_Console("Current pid %d\n", Current->pid);
+      USLOSS_PsrSet(USLOSS_PsrGet() | USLOSS_PSR_CURRENT_INT);
+      p1_switch(0, Current->pid);
+      USLOSS_ContextSwitch(NULL, &(Current->state));
     }
-  
-    p1_switch(Current->pid, nextProcess->pid);
+    else
+    {
+      USLOSS_PsrSet(USLOSS_PsrGet() | USLOSS_PSR_CURRENT_INT);
+      p1_switch(Current->pid, nextProcess->pid);
+      USLOSS_ContextSwitch(&Current->state, &(nextProcess->state));
+    }
+    
+    //USLOSS_Console("Updated ReadyList pid: %d\n", ReadyList[i]->pid);
     //First argument is previous, second argument is new
-    USLOSS_ContextSwitch(&Current->state, &nextProcess->state);
+    
 } /* dispatcher */
 
 
