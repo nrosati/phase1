@@ -31,7 +31,7 @@ int debugflag = 1;
 procStruct ProcTable[MAXPROC];
 
 // Process lists
-static procPtr ReadyList;
+static procPtr ReadyList[6];
 
 // current process ID
 procPtr Current;
@@ -63,24 +63,15 @@ void startup()
     // Initialize the Ready list, etc.
     if (DEBUG && debugflag)
         USLOSS_Console("startup(): initializing the Ready list\n");
-    ReadyList = NULL;
+    
     /* Ready list can be a single queue with all the priorities or multiple queues one
     for each priority.  I think the multiple quesues with one priority each will be
     easier.  Something he said on Friday made me think that but dont remember what*/
     
-    //Shaky implementation can be improved
-    procStruct pQueues[6][MAXPROC];
-    int j;
     for(i = 0; i < 6; i++)
     {
-      for(j = 0; j < MAXPROC; j++)
-      {
-        pQueues[i][j].status = 0;
-      }
+      ReadyList[i] = NULL;
     }
-
-    ReadyList = *pQueues;//Ready list pointing at p1 queue
-    // Initialize the clock interrupt handler
 
 
     // startup a sentinel process
@@ -95,7 +86,7 @@ void startup()
         }
         USLOSS_Halt(1);
     }
-  
+    
     // start the test process
     if (DEBUG && debugflag)
         USLOSS_Console("startup(): calling fork1() for start1\n");
@@ -146,7 +137,7 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
         USLOSS_Console("fork1(): creating process %s\n", name);
 
     // test if in kernel mode; halt if in user mode
-    if(USLOSS_PsrGet() == 0x0)
+    if((USLOSS_PSR_CURRENT_MODE & USLOSS_PsrGet()) != 1)
       USLOSS_Halt(1);
     // Return if stack size is too small
       if(stacksize < USLOSS_MIN_STACK)
@@ -188,11 +179,27 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
     ProcTable[procSlot].stackSize = stacksize;
     ProcTable[procSlot].stack = malloc(stacksize * sizeof(char));
     //gotta walk the ready list and set the previous proc, next proc ptr to this proc
-    //ProcTable[procSlot].nextProcPtr;
+
+    if(ReadyList[priority -1] == NULL)
+    {
+      ReadyList[priority -1] = &ProcTable[procSlot];
+      ProcTable[procSlot].nextProcPtr = NULL;//Next Proc Ptr
+    }
+    else
+    {
+      procPtr temp = ReadyList[priority -1];
+      while(temp->nextProcPtr != NULL)
+      {
+          temp = temp->nextProcPtr;
+      }
+      temp->nextProcPtr = &ProcTable[procSlot];
+      ProcTable[procSlot].nextProcPtr = NULL;
+    }
+    
     //ProcTable[procSlot].childProcPtr;
     //ProcTable[procSlot].nextSiblingPtr;
-    ProcTable[procSlot].pid = procSlot % MAXPROC;
-    ProcTable[procSlot].priority = priority;
+    ProcTable[procSlot].pid = nextPid++;
+    ProcTable[procSlot].priority = priority;//priority
     ProcTable[procSlot].status = 1;//status is it ready(1) at start up?
     
     // Initialize context for this process, but use launch function pointer for
@@ -203,11 +210,14 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
                        ProcTable[procSlot].stack,
                        ProcTable[procSlot].stackSize,
                        launch);
-
-    // for future phase(s)
-    p1_fork(ProcTable[procSlot].pid);
+    
 
     // More stuff to do here... Dispatcher? Ready list? Launch?
+    if(priority != 6)//Disaptcher not called with Sentinel 
+    {
+      dispatcher();
+    }
+    
 
     return ProcTable[procSlot].pid;  // -1 is not correct! Here to prevent warning. should be PID of child
 } /* fork1 */
@@ -228,7 +238,8 @@ void launch()
         USLOSS_Console("launch(): started\n");
 
     // Enable interrupts
-      //PSRget() again enable one of the bits
+      //PSRset() set second bit to 1
+      USLOSS_PsrSet(USLOSS_PsrGet() | USLOSS_PSR_CURRENT_INT);
     // Call the function passed to fork1, and capture its return value
     result = Current->startFunc(Current->startArg);
 
@@ -282,12 +293,48 @@ void quit(int status)
    Parameters - none
    Returns - nothing
    Side Effects - the context of the machine is changed
+
+   From an email response I got from Dr. Homer
+      The dispatcher will figure out what process to run and then make
+      that process to be current.  
+
+      Then in dispatcher set the new value of current, remember the 
+      previous value of current .  When you call context switch the first
+      argument will be the previous pid and the second argument will be 
+      the current pid
    ----------------------------------------------------------------------- */
 void dispatcher(void)
 {
     procPtr nextProcess = NULL;//next process in ready list
-
+    int i;
+    //Look through our priority queues
+    for(i = 0; i < 6; i++)
+    {
+      //If its empty go to the next priority
+      if(ReadyList[i] == NULL)
+      {
+        continue;
+      }
+      //If its not empty
+      else
+      {
+        //The next process should be pointed to by the ReadyList[i]
+        nextProcess = ReadyList[i];
+        //Have to update the ReadyList here too ie move everyone up one slot
+        break;
+      }
+    }
+    /*
+      If Current isnt set to something, then p1_switch causes seg fault
+      */
+    if(Current == NULL)
+    {
+      Current = ReadyList[i];
+    }
+  
     p1_switch(Current->pid, nextProcess->pid);
+    //First argument is previous, second argument is new
+    USLOSS_ContextSwitch(&Current->state, &nextProcess->state);
 } /* dispatcher */
 
 
