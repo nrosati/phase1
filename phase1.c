@@ -143,23 +143,30 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
         return -2;
     // find an empty slot in the process table
       /*
-        We set i to be <= so we can get one extra iteration in the loop
-        that way we can see if i == maxproc then all the spots are full
-        and before we check the status of the table we can just return -1
+        While loop that runs 50 times, maxprocs, if the nextPid
+        mod 50 fits in the tablle we set proc slot to that value, 
+        increment pid, and break out of the loop.  If that slot
+        is not open we increment i to move to the next slot and
+        move to the next pid.
       */
-      int i;
-     for(i = 0; i <= MAXPROC; i++)
-     {
-      if(i == MAXPROC)//if i == maxproc no empty slots go ahead and return error
-        return -1;
-      if(ProcTable[i].status == 00)
+    int i = 1;
+    USLOSS_Console("nextPID: %d\n", nextPid);
+    while(i <= MAXPROC)
+    {
+      if(ProcTable[nextPid % 50].status == 00)
       {
-        //Insert New Process
-        procSlot = i;
+        procSlot = nextPid % 50;
+        ProcTable[procSlot].pid = nextPid++;
         break;
       }
-     }//end of procTable loop
-
+      else
+      {
+        i++;
+        nextPid++;
+      }
+    }
+    if(procSlot == -1)
+      return procSlot;
     // fill-in entry in process table */
     if ( strlen(name) >= (MAXNAME - 1) ) {
         USLOSS_Console("fork1(): Process name is too long.  Halting...\n");
@@ -195,9 +202,35 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
       ProcTable[procSlot].nextProcPtr = NULL;
     }
     
-    //ProcTable[procSlot].childProcPtr;
-    //ProcTable[procSlot].nextSiblingPtr;
-    ProcTable[procSlot].pid = nextPid++;
+    /*
+      Here is where we deal with the children.  If the current process, which
+      should be the parent doesnt have a child set the child to the process
+      we are making.  If it has a child, set a temp to that child then
+      look at the sibling pointer.  If it has a sibling keep advancing 
+      down that list of siblings until we find one without a sibling.  
+      Set the next available sibling to the process we are making.
+    */
+
+    //See if we have a child
+    if(Current != NULL)
+    {
+       if(Current->childProcPtr == NULL)
+      {//If not set it here
+        Current->childProcPtr = &(ProcTable[procSlot]);
+        USLOSS_Console("Setting Child\n");
+      }
+      else//if we do
+      {//Look at that childs sibling
+        procPtr temp = Current->childProcPtr;
+        while(temp->nextSiblingPtr != NULL)//If we have a sibling
+        {
+          temp = temp->nextSiblingPtr;//Move to the sibling until we dont
+        }
+        temp->nextSiblingPtr = &(ProcTable[procSlot]);//Set the sibling
+      }//End of Sibling else
+    }//End of Current Null Check
+   
+    
     ProcTable[procSlot].priority = priority;//priority
     ProcTable[procSlot].status = 1;//status is it ready(1) at start up?
     
@@ -237,8 +270,8 @@ void launch()
         USLOSS_Console("launch(): started\n");
 
     // Enable interrupts
-      //PSRset() set second bit to 1
-      USLOSS_PsrSet(USLOSS_PsrGet() | USLOSS_PSR_CURRENT_INT);
+    //PSRset() set second bit to 1
+    USLOSS_PsrSet(USLOSS_PsrGet() | USLOSS_PSR_CURRENT_INT);
     // Call the function passed to fork1, and capture its return value
     result = Current->startFunc(Current->startArg);
 
@@ -264,6 +297,8 @@ void launch()
    ------------------------------------------------------------------------ */
 int join(int *status)
 {
+  if (DEBUG && debugflag)
+        USLOSS_Console("join: started\n"); 
     return -1;  // -1 is not correct! Here to prevent warning.
 } /* join */
 
@@ -279,6 +314,8 @@ int join(int *status)
    ------------------------------------------------------------------------ */
 void quit(int status)
 {
+    if (DEBUG && debugflag)
+        USLOSS_Console("quit: started\n");
     p1_quit(Current->pid);
 } /* quit */
 
@@ -320,31 +357,40 @@ void dispatcher(void)
         //The next process should be pointed to by the ReadyList[i]
         nextProcess = ReadyList[i];
         USLOSS_Console("Process found pid: %d\n", nextProcess->pid);
-        //Move to next item on ReadyList
-        ReadyList[i] = ReadyList[i]->nextProcPtr;
         break;
       }
     }
-
+    //USLOSS_PsrSet(USLOSS_PsrGet() | USLOSS_PSR_CURRENT_INT);//enable interrupts
+    /*
+    With help from the TA, we came up with this code that got start1 
+    switching and running.
+    */
     if(Current == NULL)
     {
       USLOSS_Console("Current is Null setting to nextProcess\n");
       Current = nextProcess;
       USLOSS_Console("Current pid %d\n", Current->pid);
-      USLOSS_PsrSet(USLOSS_PsrGet() | USLOSS_PSR_CURRENT_INT);
+      ReadyList[i] = ReadyList[i]->nextProcPtr; //Maybe here?
       p1_switch(0, Current->pid);
       USLOSS_ContextSwitch(NULL, &(Current->state));
     }
-    else
+    /*
+    Despite the vairable names, Current has to be the nextProcess in context
+    switch and there has to be another variable holding what is currently
+    in current.  These names came with the skeleton.
+    */
+    else if(Current->priority > nextProcess->priority)
     {
-      USLOSS_PsrSet(USLOSS_PsrGet() | USLOSS_PSR_CURRENT_INT);
-      p1_switch(Current->pid, nextProcess->pid);
-      USLOSS_ContextSwitch(&Current->state, &(nextProcess->state));
+      USLOSS_Console("Current is not Null\n");
+      USLOSS_Console("Current pid: %d Next pid: %d\n", Current->pid, nextProcess->pid);
+      procPtr old = Current;//Save old status
+      Current = nextProcess;//Make Current the new
+      //Since this process is about to be put on the processor
+      //Move the ReadyList pointer to the next process
+      ReadyList[i] = ReadyList[i]->nextProcPtr; //Maybe here?
+      p1_switch(old->pid, Current->pid);
+      USLOSS_ContextSwitch(&(old->state), &(Current->state));
     }
-    
-    //USLOSS_Console("Updated ReadyList pid: %d\n", ReadyList[i]->pid);
-    //First argument is previous, second argument is new
-    
 } /* dispatcher */
 
 
