@@ -21,7 +21,8 @@ void dispatcher(void);
 void launch();
 static void checkDeadlock();
 
-void addReadyList(procPtr parent);
+void addReadyList(procPtr Parent);
+void addQuitList(procPtr Parent);
 /* -------------------------- Globals ------------------------------------- */
 
 // Patrick's debugging global variable...
@@ -150,7 +151,7 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
         move to the next pid.
       */
     int i = 1;
-    USLOSS_Console("nextPID: %d\n", nextPid);
+    //USLOSS_Console("nextPID: %d\n", nextPid);
     while(i <= MAXPROC)
     {
       if(ProcTable[nextPid % 50].status == 00)
@@ -215,8 +216,8 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
     //See if we have a child
     if(Current != NULL)
     {
-        ProcTable[procSlot].parentProcPtr = &ProcTable[Current->pid % 50];
-       if(Current->childProcPtr == NULL)
+      ProcTable[procSlot].parentProcPtr = &ProcTable[Current->pid % 50];
+      if(Current->childProcPtr == NULL)
       {//If not set it here
         Current->childProcPtr = &(ProcTable[procSlot]);
         USLOSS_Console("Setting Child\n");
@@ -300,40 +301,55 @@ void launch()
 int join(int *status)
 {
   if (DEBUG && debugflag)
-        USLOSS_Console("join: started\n"); 
+        USLOSS_Console("%s called join\n", Current->name);
+  int quitPID;
+  procPtr child; 
   //Check to see if we have any children
   if(Current->childProcPtr == NULL)
   {
+    if(DEBUG && debugflag)
+    USLOSS_Console("Error: No Children\n");
     return -2;
   }
   //Check to see if we have any children who have quit
-  else if(Current->quitChildPtr != NULL)
+  child = Current->quitChildPtr;
+  if(Current->quitChildPtr != NULL)
   {
-    /*
-    //Child quit before join was called return exit stauts
-    procPtr temp = Current->quitchildProcPtr;
-    //Return something from our list of quit children
-    int status = temp->status
-    Current->quitchildProcPtr = temp->nextProcPtr;
-    return status;//Not sure if this is what we should retun*/
+    if(DEBUG && debugflag)
+      USLOSS_Console("Child on quit list: \n");
+    //child = Current->quitChildPtr;
+    *status = child->quitStatus;
+    quitPID = child->pid;
+    child->status = 00;//Mark slot as open
+    //ProcTable[child->pid % 50].status = 00;//Mark slot as open
+    free(child->stack);
+    //I think we can reuse nextProcPtr, once a process quits
+    //Its off the table and shouldnt point to the next process
+    //on ready list, I think, so instead lets have it point
+    //the next quit child, kind of like a quit ready list
+    //That of course will all be handled in quit
+    Current->quitChildPtr = Current->quitChildPtr->nextProcPtr;
+
+    return quitPID;
   }
   //No child has quit we have to block
   else
   {
+    if(DEBUG && debugflag)
+      USLOSS_Console("Join Blocking\n");
     //Pull the parent off
     Current->status = 2;//joinBlock
     //Move off the ready list here
     ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;
     //dipatcher needs to check if current is going to run again and just return
     dispatcher();
-    
-
-  }    
-
-
-
-
-    return Current->quitChildPtr->pid;  // PID of Child.
+  } 
+  child = Current->quitChildPtr;
+  *status = child->quitStatus;
+  child->status = 00;
+  quitPID = child->pid;
+  free(child->stack);
+  return quitPID;  // PID of Child.
 } /* join */
 
 
@@ -349,23 +365,51 @@ int join(int *status)
 void quit(int status)
 {
     if (DEBUG && debugflag)
-        USLOSS_Console("quit: started\n");
+        USLOSS_Console("%s called quit\n", Current->name);
   //in Quit take current off ready list
     //Status as dead,gone,empty etc
     //run dispatcher at end of quit
     //Call dispatcher
+   
     int index = Current->priority -1;
-    ReadyList[index] = ReadyList[index]->nextProcPtr;
-    Current->status = 6;
-    
-    procPtr parent = Current->parentProcPtr;
-    parent->quitChildPtr = Current;
-    addReadyList(parent);
+    ReadyList[index] = ReadyList[index]->nextProcPtr;//Take off ready list
+    Current->status = 6;//Mark dead
+    Current->quitStatus = status;//Save status for parent
+    procPtr parent = Current->parentProcPtr;//Parent pointer
+    if(parent == NULL)
+    {
+      p1_quit(Current->pid);
+      Current = NULL;
+      dispatcher();
+    }
+    addQuitList(parent);
+    if(Current->parentProcPtr->status == 2)//Parent is join blocked
+    {
+      addReadyList(parent);
+    }
+    p1_quit(Current->pid);
     Current = NULL;
     dispatcher();
-    p1_quit(Current->pid);
 } /* quit */
 
+void addQuitList(procPtr parent)
+{
+  procPtr temp = parent->quitChildPtr;//Start of the list
+  if(temp == NULL)
+  {
+    parent->quitChildPtr = Current;
+    Current->nextProcPtr = NULL;//Going to use next procPtr instead of a new 1
+  }
+  else
+  {
+    while(temp->nextProcPtr != NULL)
+    {
+      temp = temp->nextProcPtr;
+    }
+    temp->nextProcPtr = Current;
+    Current->nextProcPtr = NULL;
+  }
+}
 void addReadyList(procPtr parent)
 {
   int index = parent->priority -1;
@@ -386,6 +430,7 @@ void addReadyList(procPtr parent)
   }
   
 }
+
 /* ------------------------------------------------------------------------
    Name - dispatcher
    Purpose - dispatches ready processes.  The process with the highest
@@ -407,6 +452,8 @@ void addReadyList(procPtr parent)
    ----------------------------------------------------------------------- */
 void dispatcher(void)
 {
+    if (DEBUG && debugflag)
+        USLOSS_Console("Dispatcher: started\n");
     procPtr nextProcess = NULL;//next process in ready list
     int i;
 
@@ -437,7 +484,7 @@ void dispatcher(void)
     {
       USLOSS_Console("Current is Null setting to nextProcess\n");
       Current = nextProcess;
-      USLOSS_Console("Current pid %d\n", Current->pid);
+      //USLOSS_Console("Current pid %d\n", Current->pid);
       p1_switch(0, Current->pid);
       USLOSS_ContextSwitch(NULL, &(Current->state));
     }
@@ -448,12 +495,14 @@ void dispatcher(void)
     */
     else if(Current == nextProcess)
     {
+      if (DEBUG && debugflag)
+        USLOSS_Console("Current is nextProcess\n");
       return;
     }
     else
     {
       USLOSS_Console("Current is not Null\n");
-      USLOSS_Console("Current pid: %d Next pid: %d\n", Current->pid, nextProcess->pid);
+      //USLOSS_Console("Current pid: %d Next pid: %d\n", Current->pid, nextProcess->pid);
       procPtr old = Current;//Save old status
       Current = nextProcess;//Make Current the new
       //Since this process is about to be put on the processor
