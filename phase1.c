@@ -21,7 +21,7 @@ void dispatcher(void);
 void launch();
 static void checkDeadlock();
 
-
+void addReadyList(procPtr parent);
 /* -------------------------- Globals ------------------------------------- */
 
 // Patrick's debugging global variable...
@@ -201,6 +201,7 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
       temp->nextProcPtr = &ProcTable[procSlot];
       ProcTable[procSlot].nextProcPtr = NULL;
     }
+
     
     /*
       Here is where we deal with the children.  If the current process, which
@@ -214,6 +215,7 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
     //See if we have a child
     if(Current != NULL)
     {
+        ProcTable[procSlot].parentProcPtr = &ProcTable[Current->pid % 50];
        if(Current->childProcPtr == NULL)
       {//If not set it here
         Current->childProcPtr = &(ProcTable[procSlot]);
@@ -299,7 +301,39 @@ int join(int *status)
 {
   if (DEBUG && debugflag)
         USLOSS_Console("join: started\n"); 
-    return -1;  // -1 is not correct! Here to prevent warning.
+  //Check to see if we have any children
+  if(Current->childProcPtr == NULL)
+  {
+    return -2;
+  }
+  //Check to see if we have any children who have quit
+  else if(Current->quitChildPtr != NULL)
+  {
+    /*
+    //Child quit before join was called return exit stauts
+    procPtr temp = Current->quitchildProcPtr;
+    //Return something from our list of quit children
+    int status = temp->status
+    Current->quitchildProcPtr = temp->nextProcPtr;
+    return status;//Not sure if this is what we should retun*/
+  }
+  //No child has quit we have to block
+  else
+  {
+    //Pull the parent off
+    Current->status = 2;//joinBlock
+    //Move off the ready list here
+    ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;
+    //dipatcher needs to check if current is going to run again and just return
+    dispatcher();
+    
+
+  }    
+
+
+
+
+    return Current->quitChildPtr->pid;  // PID of Child.
 } /* join */
 
 
@@ -316,10 +350,42 @@ void quit(int status)
 {
     if (DEBUG && debugflag)
         USLOSS_Console("quit: started\n");
+  //in Quit take current off ready list
+    //Status as dead,gone,empty etc
+    //run dispatcher at end of quit
+    //Call dispatcher
+    int index = Current->priority -1;
+    ReadyList[index] = ReadyList[index]->nextProcPtr;
+    Current->status = 6;
+    
+    procPtr parent = Current->parentProcPtr;
+    parent->quitChildPtr = Current;
+    addReadyList(parent);
+    Current = NULL;
+    dispatcher();
     p1_quit(Current->pid);
 } /* quit */
 
-
+void addReadyList(procPtr parent)
+{
+  int index = parent->priority -1;
+  procPtr temp = ReadyList[index];
+  if(temp == NULL)
+  {
+    ReadyList[index] = parent;
+    parent->nextProcPtr = NULL;
+  }
+  else
+  {
+    while(temp->nextProcPtr != NULL)
+    {
+      temp = temp->nextProcPtr;
+    }
+    temp->nextProcPtr = parent;
+    parent->nextProcPtr = NULL;
+  }
+  
+}
 /* ------------------------------------------------------------------------
    Name - dispatcher
    Purpose - dispatches ready processes.  The process with the highest
@@ -343,6 +409,8 @@ void dispatcher(void)
 {
     procPtr nextProcess = NULL;//next process in ready list
     int i;
+
+    //if(Current->status != 00)
     //Look through our priority queues
     for(i = 0; i < 6; i++)
     {
@@ -360,7 +428,7 @@ void dispatcher(void)
         break;
       }
     }
-    //USLOSS_PsrSet(USLOSS_PsrGet() | USLOSS_PSR_CURRENT_INT);//enable interrupts
+    USLOSS_PsrSet(USLOSS_PsrGet() | USLOSS_PSR_CURRENT_INT);//enable interrupts
     /*
     With help from the TA, we came up with this code that got start1 
     switching and running.
@@ -370,7 +438,6 @@ void dispatcher(void)
       USLOSS_Console("Current is Null setting to nextProcess\n");
       Current = nextProcess;
       USLOSS_Console("Current pid %d\n", Current->pid);
-      ReadyList[i] = ReadyList[i]->nextProcPtr; //Maybe here?
       p1_switch(0, Current->pid);
       USLOSS_ContextSwitch(NULL, &(Current->state));
     }
@@ -379,7 +446,11 @@ void dispatcher(void)
     switch and there has to be another variable holding what is currently
     in current.  These names came with the skeleton.
     */
-    else if(Current->priority > nextProcess->priority)
+    else if(Current == nextProcess)
+    {
+      return;
+    }
+    else
     {
       USLOSS_Console("Current is not Null\n");
       USLOSS_Console("Current pid: %d Next pid: %d\n", Current->pid, nextProcess->pid);
@@ -387,7 +458,6 @@ void dispatcher(void)
       Current = nextProcess;//Make Current the new
       //Since this process is about to be put on the processor
       //Move the ReadyList pointer to the next process
-      ReadyList[i] = ReadyList[i]->nextProcPtr; //Maybe here?
       p1_switch(old->pid, Current->pid);
       USLOSS_ContextSwitch(&(old->state), &(Current->state));
     }

@@ -20,7 +20,7 @@ struct procStruct {
    int             status;        /* READY, BLOCKED, QUIT, etc. */
                                   //We are going to have ready be 1
    /* other fields as needed... */
-
+   procPtr         parentProcPtr;
    procPtr         quitChildPtr;
 };
 
