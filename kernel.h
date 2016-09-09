@@ -25,7 +25,8 @@ struct procStruct {
    procPtr         parentProcPtr;
    procPtr         quitChildPtr;
    int 		         quitStatus;	//hold arg from quit for parent
-   int             timeSlice;
+   int             timeSlice;//What time started this time slice
+   int             procTime;//Time spent on processer
 };
 
 struct psrBits {

@@ -63,6 +63,7 @@ void startup()
       for(i = 0; i < MAXPROC; i++)
       {
         ProcTable[i].status = 00;//Initialized status
+        ProcTable[i].procTime = 0;//Time on processor
       }
     // Initialize the Ready list, etc.
     if (DEBUG && debugflag)
@@ -118,6 +119,7 @@ void clock_handler(int dev, void *arg)
     USLOSS_Console("Clock Handler called\n");
   int currentTime = USLOSS_Clock();
   int procTime = Current->timeSlice;
+  if (DEBUG && debugflag)
     USLOSS_Console("%s proc Time: %d\n", Current->name, currentTime - procTime);
   if(currentTime - procTime >= 80000)
   {
@@ -176,13 +178,15 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
         move to the next pid.
       */
     int i = 1;
-    USLOSS_Console("nextPID: %d\n", nextPid);
+    if (DEBUG && debugflag)
+      USLOSS_Console("nextPID: %d\n", nextPid);
     while(i <= MAXPROC)
     {
       if(ProcTable[nextPid % 50].status == 00)
       {
         procSlot = nextPid % 50;
-        USLOSS_Console("%s pid: %d\n", name, nextPid);
+        if (DEBUG && debugflag)
+          USLOSS_Console("%s pid: %d\n", name, nextPid);
         ProcTable[procSlot].pid = nextPid++;
         break;
       }
@@ -246,7 +250,8 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
       if(Current->childProcPtr == NULL)
       {//If not set it here
         Current->childProcPtr = &(ProcTable[procSlot]);
-        USLOSS_Console("Setting Child\n");
+        if (DEBUG && debugflag)
+          USLOSS_Console("Setting Child\n");
       }
       else//if we do
       {//Look at that childs sibling
@@ -305,7 +310,7 @@ void launch()
     result = Current->startFunc(Current->startArg);
 
     if (DEBUG && debugflag)
-        USLOSS_Console("Process %d returned to launch\n", Current->pid);
+        USLOSS_Console("%s %d returned to launch\n", Current->name, Current->pid);
 
     quit(result);
 
@@ -335,7 +340,7 @@ int join(int *status)
   if(Current->childProcPtr == NULL)
   {
     if(DEBUG && debugflag)
-    USLOSS_Console("Error: No Children\n");
+      USLOSS_Console("Error: No Children\n");
     return -2;
   }
   //Check to see if we have any children who have quit
@@ -376,6 +381,7 @@ int join(int *status)
   child->status = 00;
   quitPID = child->pid;
   //free(child->stack);
+  Current->quitChildPtr = Current->quitChildPtr->nextProcPtr;
   return quitPID;  // PID of Child.
 } /* join */
 
@@ -501,7 +507,8 @@ void dispatcher(void)
       {
         //The next process should be pointed to by the ReadyList[i]
         nextProcess = ReadyList[i];
-        USLOSS_Console("Process found pid: %d\n", nextProcess->pid);
+        if (DEBUG && debugflag)
+          USLOSS_Console("Process found pid: %d\n", nextProcess->pid);
         break;
       }
     }
@@ -515,19 +522,25 @@ void dispatcher(void)
     {
       if (DEBUG && debugflag)
         USLOSS_Console("Current is nextProcess\n");
-      if(Current->status == 3)
+      if(Current->status == 3)//Time Sliced
       {
         if (DEBUG && debugflag)
           USLOSS_Console("Time Sliced\n");
           addReadyList(Current);
+          Current->procTime += USLOSS_Clock() - Current->timeSlice;
           Current = NULL;
       }
-      else
+      else//This process is going to keep running
+      {
+        Current->procTime += USLOSS_Clock() - Current->timeSlice;
         return;
+      }
+        
     }
     if(Current == NULL)
     {
-      USLOSS_Console("Current is Null setting to nextProcess\n");
+      if (DEBUG && debugflag)
+        USLOSS_Console("Current is Null setting to nextProcess\n");
       Current = nextProcess;
       Current->timeSlice = USLOSS_Clock();
       //USLOSS_Console("Current pid %d\n", Current->pid);
@@ -541,7 +554,8 @@ void dispatcher(void)
     */
     else
     {
-      USLOSS_Console("Current is not Null\n");
+      if (DEBUG && debugflag)
+        USLOSS_Console("Current is not Null\n");
       //USLOSS_Console("Current pid: %d Next pid: %d\n", Current->pid, nextProcess->pid);
       procPtr old = Current;//Save old status
       Current = nextProcess;//Make Current the new
@@ -586,11 +600,12 @@ static void checkDeadlock()
   {
     if(ReadyList[i] != NULL)
     {
-      USLOSS_Console("Process Remain shouldn't be here\n");
+      if (DEBUG && debugflag)
+        USLOSS_Console("Processes Remain shouldn't be here\n");
       USLOSS_Halt(1);
     }
     else
-      USLOSS_Console("All Processes Completed\n");
+      USLOSS_Console("All processes completed.\n");
     USLOSS_Halt(0);
   }
 }
