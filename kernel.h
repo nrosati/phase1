@@ -18,11 +18,14 @@ struct procStruct {
    char           *stack;
    unsigned int    stackSize;
    int             status;        /* READY, BLOCKED, QUIT, etc. */
-                                  //We are going to have ready be 1
+                                  //00 means empty slot guess we can call that ready
+                                  //6 means dead, 3 means time sliced, 2 join blocked
+                                  //
    /* other fields as needed... */
    procPtr         parentProcPtr;
    procPtr         quitChildPtr;
-   int 		   quitStatus;	//hold arg from quit for parent
+   int 		         quitStatus;	//hold arg from quit for parent
+   int             timeSlice;
 };
 
 struct psrBits {

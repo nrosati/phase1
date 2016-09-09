@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-
+#include <usloss.h>
 #include "kernel.h"
 
 /* ------------------------- Prototypes ----------------------------------- */
@@ -20,9 +20,12 @@ extern int start1 (char *);
 void dispatcher(void);
 void launch();
 static void checkDeadlock();
+extern int USLOSS_CLOCK();
 
 void addReadyList(procPtr Parent);
 void addQuitList(procPtr Parent);
+void disableInterrupts();
+void clock_handler(int dev, int unit);
 /* -------------------------- Globals ------------------------------------- */
 
 // Patrick's debugging global variable...
@@ -64,15 +67,13 @@ void startup()
     if (DEBUG && debugflag)
         USLOSS_Console("startup(): initializing the Ready list\n");
     
-    /* Ready list can be a single queue with all the priorities or multiple queues one
-    for each priority.  I think the multiple quesues with one priority each will be
-    easier.  Something he said on Friday made me think that but dont remember what*/
-    
+    //Initializing ReadyLists
     for(i = 0; i < 6; i++)
     {
       ReadyList[i] = NULL;
     }
-
+    //Initializing clock interrupt handler //
+    USLOSS_IntVec[USLOSS_CLOCK_INT] = clock_handler;
 
     // startup a sentinel process
     if (DEBUG && debugflag)
@@ -103,6 +104,30 @@ void startup()
     return;
 } /* startup */
 
+/*
+  For clock interrupts, returns void, takes two integer
+  arguments.  Checks if the current process has exceeded its time slice.  Call 
+  dispatcher if necessary Time Slice is 80 milliseconds.  USLOSS_CLOCK returns 
+  time in microseconds. 1,000 microseconds for 1 milisecond.  So the time 
+  slice is 80,000 microseconds.
+*/
+void clock_handler(int dev, int unit)
+{
+  if(DEBUG && debugflag)
+    USLOSS_Console("Clock Handler called\n");
+  int currentTime = USLOSS_CLOCK();
+  int procTime = Current->timeSlice;
+  if(currentTime - procTime >= 80000)
+  {
+    //Current->status = 3//Time Sliced?
+    //addReadyList(Current);
+    //Current = NULL;
+    //dispatcher();?
+    dispatcher();//Need to add some functionality to dispatcher now
+    //Need to set the time for process going on in dispatcher and check
+    //if Current process has exceeded time slice call addReadyList on it
+  }
+}
 /* ------------------------------------------------------------------------
    Name - finish
    Purpose - Required by USLOSS
@@ -131,6 +156,7 @@ void finish()
 int fork1(char *name, int (*startFunc)(char *), char *arg,
           int stacksize, int priority)
 {
+    disableInterrupts();
     int procSlot = -1;
 
     if (DEBUG && debugflag)
@@ -300,6 +326,7 @@ void launch()
    ------------------------------------------------------------------------ */
 int join(int *status)
 {
+  disableInterrupts();
   if (DEBUG && debugflag)
         USLOSS_Console("%s called join\n", Current->name);
   int quitPID;
@@ -352,7 +379,7 @@ int join(int *status)
   return quitPID;  // PID of Child.
 } /* join */
 
-
+//test
 /* ------------------------------------------------------------------------
    Name - quit
    Purpose - Stops the child process and notifies the parent of the death by
@@ -364,6 +391,7 @@ int join(int *status)
    ------------------------------------------------------------------------ */
 void quit(int status)
 {
+  disableInterrupts();
     if (DEBUG && debugflag)
         USLOSS_Console("%s called quit\n", Current->name);
   //in Quit take current off ready list
@@ -452,6 +480,7 @@ void addReadyList(procPtr parent)
    ----------------------------------------------------------------------- */
 void dispatcher(void)
 {
+    disableInterrupts();
     if (DEBUG && debugflag)
         USLOSS_Console("Dispatcher: started\n");
     procPtr nextProcess = NULL;//next process in ready list
@@ -484,6 +513,7 @@ void dispatcher(void)
     {
       USLOSS_Console("Current is Null setting to nextProcess\n");
       Current = nextProcess;
+      Current->timeSlice = USLOSS_CLOCK();
       //USLOSS_Console("Current pid %d\n", Current->pid);
       p1_switch(0, Current->pid);
       USLOSS_ContextSwitch(NULL, &(Current->state));
@@ -497,6 +527,14 @@ void dispatcher(void)
     {
       if (DEBUG && debugflag)
         USLOSS_Console("Current is nextProcess\n");
+      if(Current->status == 3)
+      {
+        if (DEBUG && debugflag)
+          USLOSS_Console("Time Sliced\n");
+        addReadyList(Current);
+        Current = NULL;
+        dispatcher();
+      }
       return;
     }
     else
@@ -505,6 +543,7 @@ void dispatcher(void)
       //USLOSS_Console("Current pid: %d Next pid: %d\n", Current->pid, nextProcess->pid);
       procPtr old = Current;//Save old status
       Current = nextProcess;//Make Current the new
+      Current->timeSlice = USLOSS_CLOCK();
       //Since this process is about to be put on the processor
       //Move the ReadyList pointer to the next process
       p1_switch(old->pid, Current->pid);
@@ -539,8 +578,20 @@ int sentinel (char *dummy)
 /* check to determine if deadlock has occurred... */
 static void checkDeadlock()
 {
-} /* checkDeadlock */
-
+  /* checkDeadlock */
+  int i;
+  for(i = 0; i < 5; i++)
+  {
+    if(ReadyList[i] != NULL)
+    {
+      USLOSS_Console("Process Remain shouldn't be here\n");
+      USLOSS_Halt(1);
+    }
+    else
+      USLOSS_Console("All Processes Completed\n");
+    USLOSS_Halt(0);
+  }
+}
 
 /*
  * Disables the interrupts.
