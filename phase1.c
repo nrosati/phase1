@@ -215,6 +215,7 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
         strcpy(ProcTable[procSlot].startArg, arg);//arg
     ProcTable[procSlot].stackSize = stacksize;
     ProcTable[procSlot].stack = malloc(stacksize * sizeof(char));
+    
     //gotta walk the ready list and set the previous proc, next proc ptr to this proc
 
     if(ReadyList[priority -1] == NULL)
@@ -232,7 +233,7 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
       temp->nextProcPtr = &ProcTable[procSlot];
       ProcTable[procSlot].nextProcPtr = NULL;
     }
-
+    
     
     /*
       Here is where we deal with the children.  If the current process, which
@@ -246,9 +247,12 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
     //See if we have a child
     if(Current != NULL)
     {
+      
       ProcTable[procSlot].parentProcPtr = &ProcTable[Current->pid % 50];
+      //
       if(Current->childProcPtr == NULL)
       {//If not set it here
+        //USLOSS_Console("%s, %d", ProcTable[procSlot].name, ProcTable[procSlot].pid);
         Current->childProcPtr = &(ProcTable[procSlot]);
         if (DEBUG && debugflag)
           USLOSS_Console("Setting Child\n");
@@ -258,20 +262,21 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
         procPtr temp = Current->childProcPtr;
         while(temp->nextSiblingPtr != NULL)//If we have a sibling
         {
+          //We got an infinite loop here some how
           temp = temp->nextSiblingPtr;//Move to the sibling until we dont
         }
         temp->nextSiblingPtr = &(ProcTable[procSlot]);//Set the sibling
       }//End of Sibling else
     }//End of Current Null Check
    
-    
+    //USLOSS_Console("Am I making it to here?\n");
     ProcTable[procSlot].priority = priority;//priority
     ProcTable[procSlot].status = 1;//status is it ready(1) at start up?
     
     // Initialize context for this process, but use launch function pointer for
     // the initial value of the process's program counter (PC)
 
-
+    //USLOSS_Console("Am I making it to here?\n");
     USLOSS_ContextInit(&(ProcTable[procSlot].state), USLOSS_PsrGet(),
                        ProcTable[procSlot].stack,
                        ProcTable[procSlot].stackSize,
@@ -337,7 +342,7 @@ int join(int *status)
   int quitPID;
   procPtr child; 
   //Check to see if we have any children
-  if(Current->childProcPtr == NULL)
+  if(Current->childProcPtr == NULL && Current->quitChildPtr == NULL)
   {
     if(DEBUG && debugflag)
       USLOSS_Console("Error: No Children\n");
@@ -360,8 +365,9 @@ int join(int *status)
     //on ready list, I think, so instead lets have it point
     //the next quit child, kind of like a quit ready list
     //That of course will all be handled in quit
+    child->nextSiblingPtr = NULL;
     Current->quitChildPtr = Current->quitChildPtr->nextProcPtr;
-
+    //Current->childProcPtr = child->nextSiblingPtr;
     return quitPID;
   }
   //No child has quit we have to block
@@ -381,7 +387,12 @@ int join(int *status)
   child->status = 00;
   quitPID = child->pid;
   //free(child->stack);
-  Current->quitChildPtr = Current->quitChildPtr->nextProcPtr;
+  if(Current->childProcPtr == child)
+  {
+    Current->childProcPtr = child->nextSiblingPtr;
+  }
+  child->nextSiblingPtr = NULL;
+  Current->quitChildPtr = child->nextProcPtr;
   return quitPID;  // PID of Child.
 } /* join */
 
@@ -527,12 +538,10 @@ void dispatcher(void)
         if (DEBUG && debugflag)
           USLOSS_Console("Time Sliced\n");
           addReadyList(Current);
-          Current->procTime += USLOSS_Clock() - Current->timeSlice;
           Current = NULL;
       }
       else//This process is going to keep running
       {
-        Current->procTime += USLOSS_Clock() - Current->timeSlice;
         return;
       }
         
@@ -557,6 +566,8 @@ void dispatcher(void)
       if (DEBUG && debugflag)
         USLOSS_Console("Current is not Null\n");
       //USLOSS_Console("Current pid: %d Next pid: %d\n", Current->pid, nextProcess->pid);
+      //I think this is the only place we need this line
+      Current->procTime += USLOSS_Clock() - Current->timeSlice;//Current time - start time
       procPtr old = Current;//Save old status
       Current = nextProcess;//Make Current the new
       Current->timeSlice = USLOSS_Clock();
