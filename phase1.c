@@ -28,7 +28,7 @@ void clock_handler(int dev, void *arg);
 void dumpProcesses();
 int getpid();
 void cleanUp(procPtr child);
-int haveChildren(procPtr Proc);
+
 /* -------------------------- Globals ------------------------------------- */
 
 // Patrick's debugging global variable...
@@ -68,6 +68,7 @@ void startup()
         ProcTable[i].procTime = 0;//Time on processor
         ProcTable[i].pid = -1;
         ProcTable[i].priority = -1;
+        ProcTable[i].isZapped = 0;
       }
     // Initialize the Ready list, etc.
     if (DEBUG && debugflag)
@@ -450,8 +451,8 @@ void quit(int status)
     //Status as dead,gone,empty etc
     //run dispatcher at end of quit
     //Call dispatcher
-   //int haveKids = haveChildren(Current);
-   if(Current->childProcPtr != NULL)//1
+   
+   if(Current->childProcPtr != NULL)
    {
       USLOSS_Console("process %d, '%s', has active children. Halting...\n", Current->pid, Current->name);
       USLOSS_Halt(1);
@@ -462,15 +463,23 @@ void quit(int status)
     procPtr parent = Current->parentProcPtr;//Parent pointer
     if(parent == NULL)
     {
-      Current->status = 6;
+      Current->status = 00;
+      //Current->nextSiblingPtr = NULL;
+      //Current->quitChildPtr = Current->nextProcPtr;
+      //free(child->stack)
+      //Current->status = 00;
+      Current->pid = -1;
+      Current->parentProcPtr = NULL;
+      strcpy(Current->name, "");
+      Current->priority = -1;
       p1_quit(Current->pid);
       //Probably gonna want more clean up here
       Current = NULL;
       dispatcher();
     }
-    if(parent->status != 2)
+    if(parent->status != 2)//If parent hasnt called join
     {
-      Current->status = 5;//Zombie?
+      Current->status = 5;//Zombie? so we dont loose our data in table
     }
     else
     {
@@ -481,21 +490,25 @@ void quit(int status)
     {
       addReadyList(parent);
     }
+    if(Current->isZapped)//If we are zapped
+    {
+      int i;
+      for(i = 0; i < MAXPROC; i++)
+      {
+        if(Current->zapList[i] == 1)//Find the processes that have zapped us
+        {
+          addReadyList(&ProcTable[i]);//Add them to readylist, i.e unblock
+        }
+      }
+    }
+    //For children whos parent is join block
+    //Clean up is finished in join
     p1_quit(Current->pid);
     Current = NULL;
     dispatcher();
 } /* quit */
 
-//Return 1 if you have Children 0 if you dont
-int haveChildren(procPtr Proc)
-{
-  procPtr child = Proc->childProcPtr;
-  if(child != NULL)
-    return 1;
-  if(child->nextSiblingPtr != NULL)
-    return 1;
-  return 0;
-}
+
 void addQuitList(procPtr parent)
 {
   procPtr temp = parent->quitChildPtr;//Start of the list
@@ -666,20 +679,24 @@ int sentinel (char *dummy)
 /* check to determine if deadlock has occurred... */
 static void checkDeadlock()
 {
+  if(DEBUG && debugflag)
+    USLOSS_Console("Checking Deadlock\n");
+  //dumpProcesses();
   /* checkDeadlock */
   int i;
-  for(i = 0; i < 5; i++)
+  for(i = MAXPROC; i > 1; i--)
   {
-    if(ReadyList[i] != NULL)
+    if(ProcTable[i].status != 00 && ProcTable[i].priority != 6)
     {
-      if (DEBUG && debugflag)
-        USLOSS_Console("Processes Remain shouldn't be here\n");
+      if(DEBUG && debugflag)
+        USLOSS_Console("CheckDeadlock(): numProc = %d. Only Sentinel should be left. Halting...\n", 
+          i);
       USLOSS_Halt(1);
     }
-    else
-      USLOSS_Console("All processes completed.\n");
-    USLOSS_Halt(0);
   }
+
+  USLOSS_Console("All processes completed.\n");
+  USLOSS_Halt(0);
 }
 int getpid()
 {
@@ -724,6 +741,9 @@ void dumpProcesses()
       case 6:
           USLOSS_Console("DEAD          ");
           break;
+      case 7:
+          USLOSS_Console("ZapBLocked    ");
+          break;
       default:
           USLOSS_Console("DOH!          ");
     }
@@ -758,3 +778,36 @@ void disableInterrupts()
         // We ARE in kernel mode
         USLOSS_PsrSet( USLOSS_PsrGet() & ~USLOSS_PSR_CURRENT_INT );
 } /* disableInterrupts */
+/*Caller blocks, waits for zapped process to quit.  When processes quit
+they have to check if they have been zapped, and notify zapper that they
+have quit.  I.e put them back on the ready list.*/
+int zap(int pid)
+{
+  if(Current->pid == pid)
+  {
+    USLOSS_Console("Trying to zap yourself, not allowed\n");
+    USLOSS_Halt(1);
+  }
+  if(ProcTable[pid].status == 00)
+  {
+    USLOSS_Console("Trying to zap nonexistent process\n");
+    USLOSS_Halt(1);
+  }
+  Current->status = 7;//Zap block
+  ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;//Move off ready list
+  procPtr toZap = &ProcTable[pid % 50];//Proc we want to zap
+  toZap->zapList[Current->pid % 50] = 1;//Use the Zappers pid as an index in an array
+  toZap->isZapped = 1;
+  //isZapped call go here?
+  dispatcher();
+  if(isZapped())//the calling process itself was zapped while in zap
+    return -1;
+  return 0;//Zap process has called quit
+}
+
+int isZapped()
+{
+  return Current->isZapped;//If we dont find a zap entry
+}
+
+

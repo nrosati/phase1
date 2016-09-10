@@ -20,13 +20,15 @@ struct procStruct {
    int             status;        /* READY, BLOCKED, QUIT, etc. */
                                   //00 means empty slot, 1 means ready, 2 means join blocked
                                   //3 means time sliced, 4 means running, 5 means zombie, 6 means dead
-                                  //
+                                  //7 means zapBlocked
    /* other fields as needed... */
    procPtr         parentProcPtr;
    procPtr         quitChildPtr;
    int 		         quitStatus;	//hold arg from quit for parent
    int             timeSlice;//What time started this time slice
    int             procTime;//Time spent on processer
+   int             zapList[MAXPROC];
+   int             isZapped;
 };
 
 struct psrBits {
