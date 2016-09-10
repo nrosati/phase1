@@ -18,8 +18,8 @@ struct procStruct {
    char           *stack;
    unsigned int    stackSize;
    int             status;        /* READY, BLOCKED, QUIT, etc. */
-                                  //00 means empty slot guess we can call that ready
-                                  //6 means dead, 3 means time sliced, 2 join blocked
+                                  //00 means empty slot, 1 means ready, 2 means join blocked
+                                  //3 means time sliced, 4 means running, 5 means zombie, 6 means dead
                                   //
    /* other fields as needed... */
    procPtr         parentProcPtr;

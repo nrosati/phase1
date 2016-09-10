@@ -27,6 +27,8 @@ void disableInterrupts();
 void clock_handler(int dev, void *arg);
 void dumpProcesses();
 int getpid();
+void cleanUp(procPtr child);
+int haveChildren(procPtr Proc);
 /* -------------------------- Globals ------------------------------------- */
 
 // Patrick's debugging global variable...
@@ -64,6 +66,8 @@ void startup()
       {
         ProcTable[i].status = 00;//Initialized status
         ProcTable[i].procTime = 0;//Time on processor
+        ProcTable[i].pid = -1;
+        ProcTable[i].priority = -1;
       }
     // Initialize the Ready list, etc.
     if (DEBUG && debugflag)
@@ -157,7 +161,7 @@ void finish()
 int fork1(char *name, int (*startFunc)(char *), char *arg,
           int stacksize, int priority)
 {
-    disableInterrupts();
+    
     int procSlot = -1;
 
     if (DEBUG && debugflag)
@@ -165,7 +169,11 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
 
     // test if in kernel mode; halt if in user mode
     if((USLOSS_PSR_CURRENT_MODE & USLOSS_PsrGet()) != 1)
+    {
+      USLOSS_Console("fork1(): called while in user mode, by process %d. Halting...\n", Current->pid);
       USLOSS_Halt(1);
+    }
+    disableInterrupts();
     // Return if stack size is too small
       if(stacksize < USLOSS_MIN_STACK)
         return -2;
@@ -336,13 +344,18 @@ void launch()
    ------------------------------------------------------------------------ */
 int join(int *status)
 {
+  if((USLOSS_PSR_CURRENT_MODE & USLOSS_PsrGet()) != 1)
+  {
+    USLOSS_Console("fork1(): called while in user mode, by process %d. Halting...\n", Current->pid);
+    USLOSS_Halt(1);
+  }
   disableInterrupts();
   if (DEBUG && debugflag)
         USLOSS_Console("%s called join\n", Current->name);
   int quitPID;
   procPtr child; 
   //Check to see if we have any children
-  if(Current->childProcPtr == NULL && Current->quitChildPtr == NULL)
+  if(Current->childProcPtr == NULL)
   {
     if(DEBUG && debugflag)
       USLOSS_Console("Error: No Children\n");
@@ -357,17 +370,7 @@ int join(int *status)
     //child = Current->quitChildPtr;
     *status = child->quitStatus;
     quitPID = child->pid;
-    child->status = 00;//Mark slot as open
-    //ProcTable[child->pid % 50].status = 00;//Mark slot as open
-    //free(child->stack);
-    //I think we can reuse nextProcPtr, once a process quits
-    //Its off the table and shouldnt point to the next process
-    //on ready list, I think, so instead lets have it point
-    //the next quit child, kind of like a quit ready list
-    //That of course will all be handled in quit
-    child->nextSiblingPtr = NULL;
-    Current->quitChildPtr = Current->quitChildPtr->nextProcPtr;
-    //Current->childProcPtr = child->nextSiblingPtr;
+    cleanUp(child);
     return quitPID;
   }
   //No child has quit we have to block
@@ -384,18 +387,45 @@ int join(int *status)
   } 
   child = Current->quitChildPtr;
   *status = child->quitStatus;
-  child->status = 00;
   quitPID = child->pid;
-  //free(child->stack);
+  cleanUp(child);
+  return quitPID;  // PID of Child.
+} /* join */
+
+void cleanUp(procPtr child)
+{
+
   if(Current->childProcPtr == child)
   {
     Current->childProcPtr = child->nextSiblingPtr;
   }
+  else//Starting here is sibling stuff may want to move to quit or break out into own function
+  {
+    procPtr temp = Current->childProcPtr->nextSiblingPtr;//First sibling
+    if(temp == NULL)
+    {
+      //If there is only one child, i.e childProc and no siblings do nothing
+    }
+    else//We have to maintain the sibling list
+    {
+      while(temp->nextSiblingPtr != child)//stop at the sibling before this guy
+      { 
+        temp = temp->nextSiblingPtr;
+      }
+      temp->nextSiblingPtr = child->nextSiblingPtr;//set the sibling, to the sibling after 
+    }
+    
+  }
   child->nextSiblingPtr = NULL;
   Current->quitChildPtr = child->nextProcPtr;
-  return quitPID;  // PID of Child.
-} /* join */
+  //free(child->stack)
+  child->status = 00;
+  child->pid = -1;
+  child->parentProcPtr = NULL;
+  strcpy(child->name, "");
+  child->priority = -1;
 
+}
 //test
 /* ------------------------------------------------------------------------
    Name - quit
@@ -408,24 +438,43 @@ int join(int *status)
    ------------------------------------------------------------------------ */
 void quit(int status)
 {
-  disableInterrupts();
+  if((USLOSS_PSR_CURRENT_MODE & USLOSS_PsrGet()) != 1)
+  {
+    USLOSS_Console("fork1(): called while in user mode, by process %d. Halting...\n", Current->pid);
+    USLOSS_Halt(1);
+  }
+    disableInterrupts();
     if (DEBUG && debugflag)
         USLOSS_Console("%s called quit\n", Current->name);
   //in Quit take current off ready list
     //Status as dead,gone,empty etc
     //run dispatcher at end of quit
     //Call dispatcher
-   
+   //int haveKids = haveChildren(Current);
+   if(Current->childProcPtr != NULL)//1
+   {
+      USLOSS_Console("process %d, '%s', has active children. Halting...\n", Current->pid, Current->name);
+      USLOSS_Halt(1);
+   }
     int index = Current->priority -1;
     ReadyList[index] = ReadyList[index]->nextProcPtr;//Take off ready list
-    Current->status = 6;//Mark dead
     Current->quitStatus = status;//Save status for parent
     procPtr parent = Current->parentProcPtr;//Parent pointer
     if(parent == NULL)
     {
+      Current->status = 6;
       p1_quit(Current->pid);
+      //Probably gonna want more clean up here
       Current = NULL;
       dispatcher();
+    }
+    if(parent->status != 2)
+    {
+      Current->status = 5;//Zombie?
+    }
+    else
+    {
+      Current->status = 6;//Parent not join blocked mark it as dead
     }
     addQuitList(parent);
     if(Current->parentProcPtr->status == 2)//Parent is join blocked
@@ -437,6 +486,16 @@ void quit(int status)
     dispatcher();
 } /* quit */
 
+//Return 1 if you have Children 0 if you dont
+int haveChildren(procPtr Proc)
+{
+  procPtr child = Proc->childProcPtr;
+  if(child != NULL)
+    return 1;
+  if(child->nextSiblingPtr != NULL)
+    return 1;
+  return 0;
+}
 void addQuitList(procPtr parent)
 {
   procPtr temp = parent->quitChildPtr;//Start of the list
@@ -552,6 +611,7 @@ void dispatcher(void)
         USLOSS_Console("Current is Null setting to nextProcess\n");
       Current = nextProcess;
       Current->timeSlice = USLOSS_Clock();
+      Current->status = 4;
       //USLOSS_Console("Current pid %d\n", Current->pid);
       p1_switch(0, Current->pid);
       USLOSS_ContextSwitch(NULL, &(Current->state));
@@ -571,6 +631,7 @@ void dispatcher(void)
       procPtr old = Current;//Save old status
       Current = nextProcess;//Make Current the new
       Current->timeSlice = USLOSS_Clock();
+      Current->status = 4;
       //Since this process is about to be put on the processor
       //Move the ReadyList pointer to the next process
       p1_switch(old->pid, Current->pid);
@@ -628,6 +689,59 @@ void dumpProcesses()
 {
   if(DEBUG && debugflag)
     USLOSS_Console("Dumping Processes\n");
+
+  USLOSS_Console("PID    Parent   Priority        Status      #kids     CPUtime        Name      \n");
+  int i;
+  for(i = 0; i < MAXPROC; i++)
+  {
+    procPtr proc = &ProcTable[i];
+    USLOSS_Console("%d      ", proc->pid);
+    if(proc->parentProcPtr == NULL)
+      USLOSS_Console("-1        ");
+    else
+      USLOSS_Console("%d         ", proc->parentProcPtr->pid);
+    USLOSS_Console("%d              ", proc->priority);
+    switch(proc->status)
+    {
+      case 00:
+          USLOSS_Console("EMPTY         ");
+          break;
+      case 1:
+          USLOSS_Console("READY         ");
+          break;
+      case 2:
+          USLOSS_Console("JOINBLOCK     ");
+          break;
+      case 3:
+          USLOSS_Console("TIMESLICED    ");
+          break;
+      case 4:
+          USLOSS_Console("RUNNING       ");
+          break;
+      case 5:
+          USLOSS_Console("ZOMBIE        ");
+          break;
+      case 6:
+          USLOSS_Console("DEAD          ");
+          break;
+      default:
+          USLOSS_Console("DOH!          ");
+    }
+    int kids = 0;
+    if(proc->childProcPtr != NULL)
+    {
+      kids++;
+      procPtr child = proc->childProcPtr;
+      while(child->nextSiblingPtr != NULL)
+      {
+        kids++;
+        child = child->nextSiblingPtr;
+      }
+    }
+    USLOSS_Console("%d          ", kids);
+    USLOSS_Console("%d         ", proc->procTime);
+    USLOSS_Console("%s\n", proc->name);
+  }
 }
 /*
  * Disables the interrupts.
