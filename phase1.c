@@ -126,13 +126,7 @@ void clock_handler(int dev, void *arg)
   int procTime = Current->timeSlice;
   if (DEBUG && debugflag)
     USLOSS_Console("%s proc Time: %d\n", Current->name, currentTime - procTime);
-  if(currentTime - procTime >= 80000)
-  {
-    Current->status = 3;
-    dispatcher();//Need to add some functionality to dispatcher now
-    //Need to set the time for process going on in dispatcher and check
-    //if Current process has exceeded time slice call addReadyList on it
-  }
+  timeSlice();
 }
 /* ------------------------------------------------------------------------
    Name - finish
@@ -809,5 +803,69 @@ int isZapped()
 {
   return Current->isZapped;//If we dont find a zap entry
 }
+/*
+  Should we update the procTime here? Take the current time, subtract the start
+  time and add it here?  Then we would have to reset the start time.  The 
+  procTime as a whole needs to be rethought I dont think its being calculated
+  correctly
+  */
+int readtime()
+{
+  return Current->procTime;
+}
+/*
+  What does if process was zapped while blocked mean?  How do we check that here?
+  */
+int blockMe(int newStatus)
+{
+  if(newStatus < 10)
+  {
+    USLOSS_Console("New Status is less than 10. Halting...\n");
+    USLOSS_Halt(1);
+  }
+  //Do we check to see if its been zapped before or after we set the new status
+  Current->status = newStatus;
+  //move off ready list
+  ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;
+  if(Current->isZapped)//1 if zapped, will run
+    return -1;
+  else 
+    return 0;
+}
 
+int unblockProc(int pid)
+{
+  procPtr proc = &ProcTable[pid % 50];
+  //not blocked, dne, is current, or blocked < 10
+  if((proc == NULL) | (proc == Current) | (proc->status < 10))
+  {
+    return -2;
+  }
+  if(proc->isZapped)//1 if zapped, will run
+  {
+    return -1;
+  }
+  else
+  {
+     addReadyList(proc);
+     return 0;
+  }
+}
+
+int readCurStartTime()
+{
+  return Current->timeSlice;
+}
+
+void timeSlice()
+{
+  int currentTime = USLOSS_Clock();
+  int procTime = Current->timeSlice;
+  if(currentTime - procTime >= 80000)
+  {
+    Current->status = 3;
+    dispatcher();
+    //Need to double check how dispatcher handles start time and time slices 
+  }
+}
 
