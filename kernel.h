@@ -25,8 +25,8 @@ struct procStruct {
    procPtr         parentProcPtr;
    procPtr         quitChildPtr;
    int 		         quitStatus;	//hold arg from quit for parent
-   int             timeSlice;//What time started this time slice
-   int             procTime;//Time spent on processer
+   int             timeSlice;//Start time
+   int             procTime;//Total time
    int             zapList[MAXPROC];
    int             isZapped;
 };

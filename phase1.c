@@ -32,7 +32,7 @@ void updateSiblings(procPtr parent, procPtr child);
 /* -------------------------- Globals ------------------------------------- */
 
 // Patrick's debugging global variable...
-int debugflag = 1;
+int debugflag = 0;
 
 // the process table
 procStruct ProcTable[MAXPROC];
@@ -369,6 +369,8 @@ int join(int *status)
     quitPID = child->pid;
     Current->quitChildPtr = child->nextProcPtr;//Update quit list
     cleanUp(child);
+    if(Current->isZapped)
+      return -1;
     return quitPID;
   }
   //No child has quit we have to block
@@ -388,6 +390,8 @@ int join(int *status)
   quitPID = child->pid;
   Current->quitChildPtr = child->nextProcPtr;
   cleanUp(child);
+  if(Current-> isZapped)
+    return -1;
   return quitPID;  // PID of Child.
 } /* join */
 
@@ -433,14 +437,26 @@ void updateSiblings(procPtr parent, procPtr child)
   //the sibling list
   if(parent->childProcPtr == child)
   {
-    parent->childProcPtr = child->nextSiblingPtr;
+    parent->childProcPtr = child->nextSiblingPtr;//
   }
   else
   {
     //We go through the parent to make sure we start at the beginning of sibling list
     procPtr temp = parent->childProcPtr->nextSiblingPtr;//Start at the beginning of the sibling list
+    //Child is process is 6, so temp is process 7
+    if(DEBUG && debugflag)
+      USLOSS_Console("Sibling PID: %d\n", temp->pid);
+    //the next sibling is null and doesnt equal child,
+    //temp gets set to NULL and we try agian and fault
+    if(temp == child)//Only two children, child and one sibling
+    {
+      parent->childProcPtr->nextSiblingPtr = temp->nextSiblingPtr;
+      return;
+    }
     while(temp->nextSiblingPtr != child)//Stop at the sibling before us
     {
+      if(DEBUG && debugflag)
+        USLOSS_Console("Sibling PID: %d\n", temp->pid);
       temp = temp->nextSiblingPtr;
     }
     temp->nextSiblingPtr = child->nextSiblingPtr;//cut out the child leaving
@@ -474,16 +490,18 @@ void quit(int status)
    if(Current->childProcPtr != NULL)//Check for active children
    {
       USLOSS_Console("process %d, '%s', has active children. Halting...\n", Current->pid, Current->name);
+      dumpProcesses();
       USLOSS_Halt(1);
    }
     int index = Current->priority -1;
     if(Current->quitChildPtr != NULL)
     {
-      if(DEBUG && debugflag)
-        USLOSS_Console("Zombie Children\n");
+      
       procPtr temp = Current->quitChildPtr;
       while(temp != NULL)
       {
+        if(DEBUG && debugflag)
+        USLOSS_Console("Cleaning up Zombie Children\n");
         procPtr zombie = temp;
         temp = temp->nextProcPtr;
         cleanUp(zombie);
@@ -623,6 +641,8 @@ void dispatcher(void)
       {
         //The next process should be pointed to by the ReadyList[i]
         nextProcess = ReadyList[i];
+        //ReadyList[i] = ReadyList[i]->nextProcPtr;
+        //addReadyList(nextProcess);
         if (DEBUG && debugflag)
           USLOSS_Console("Process found pid: %d\n", nextProcess->pid);
         break;
@@ -656,7 +676,7 @@ void dispatcher(void)
       if (DEBUG && debugflag)
         USLOSS_Console("Current is Null setting to nextProcess\n");
       Current = nextProcess;
-      Current->timeSlice = USLOSS_Clock();
+      Current->timeSlice = USLOSS_Clock();//Start time
       Current->status = 4;
       //USLOSS_Console("Current pid %d\n", Current->pid);
       p1_switch(0, Current->pid);
@@ -673,10 +693,11 @@ void dispatcher(void)
         USLOSS_Console("Current is not Null\n");
       //USLOSS_Console("Current pid: %d Next pid: %d\n", Current->pid, nextProcess->pid);
       //I think this is the only place we need this line
+      //total time = current time - start time
       Current->procTime += USLOSS_Clock() - Current->timeSlice;//Current time - start time
       procPtr old = Current;//Save old status
       Current = nextProcess;//Make Current the new
-      Current->timeSlice = USLOSS_Clock();
+      Current->timeSlice = USLOSS_Clock();//Start time
       Current->status = 4;
       //Since this process is about to be put on the processor
       //Move the ReadyList pointer to the next process
@@ -779,7 +800,7 @@ void dumpProcesses()
           USLOSS_Console("ZapBLocked    ");
           break;
       default:
-          USLOSS_Console("DOH!          ");
+          USLOSS_Console("%d          ", proc->status);
     }
     int kids = 0;
     if(proc->childProcPtr != NULL)
@@ -882,12 +903,13 @@ int unblockProc(int pid)
   {
     return -2;
   }
-  if(proc->isZapped)//1 if zapped, will run
+  if(Current->isZapped)//1 if zapped, will run
   {
     return -1;
   }
   else
   {
+     proc->status = 4;
      addReadyList(proc);
      dispatcher();
      return 0;
@@ -902,10 +924,11 @@ int readCurStartTime()
 void timeSlice()
 {
   int currentTime = USLOSS_Clock();
-  int procTime = Current->timeSlice;
+  int procTime = Current->timeSlice;//Start time
   if(currentTime - procTime >= 80000)
   {
     Current->status = 3;
+    Current->procTime += USLOSS_Clock() - Current->timeSlice;
     dispatcher();
     //Need to double check how dispatcher handles start time and time slices 
   }
