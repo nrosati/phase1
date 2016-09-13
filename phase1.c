@@ -172,6 +172,8 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
     // Return if stack size is too small
       if(stacksize < USLOSS_MIN_STACK)
         return -2;
+      if((priority < 1 ) | (priority > 6))
+        return -1;
     // find an empty slot in the process table
       /*
         While loop that runs 50 times, maxprocs, if the nextPid
@@ -452,6 +454,11 @@ void quit(int status)
       USLOSS_Halt(1);
    }
     int index = Current->priority -1;
+    if(ReadyList[index] == NULL)
+    {
+      Current->quitStatus = status;
+      return;
+    }
     ReadyList[index] = ReadyList[index]->nextProcPtr;//Take off ready list
     Current->quitStatus = status;//Save status for parent
     procPtr parent = Current->parentProcPtr;//Parent pointer
@@ -779,7 +786,7 @@ int zap(int pid)
 {
   if(Current->pid == pid)
   {
-    USLOSS_Console("Trying to zap yourself, not allowed\n");
+    USLOSS_Console("process %d tried to zap itself. Halting...\n", Current->pid);
     USLOSS_Halt(1);
   }
   if(ProcTable[pid].status == 00)
@@ -827,6 +834,7 @@ int blockMe(int newStatus)
   Current->status = newStatus;
   //move off ready list
   ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;
+  dispatcher();
   if(Current->isZapped)//1 if zapped, will run
     return -1;
   else 
@@ -848,6 +856,7 @@ int unblockProc(int pid)
   else
   {
      addReadyList(proc);
+     dispatcher();
      return 0;
   }
 }
