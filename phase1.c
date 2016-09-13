@@ -28,7 +28,7 @@ void clock_handler(int dev, void *arg);
 void dumpProcesses();
 int getpid();
 void cleanUp(procPtr child);
-
+void updateSiblings(procPtr parent, procPtr child);
 /* -------------------------- Globals ------------------------------------- */
 
 // Patrick's debugging global variable...
@@ -172,7 +172,7 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
     // Return if stack size is too small
       if(stacksize < USLOSS_MIN_STACK)
         return -2;
-      if((priority < 1 ) | (priority > 6))
+      if((priority < 1 ) || (priority > 6))
         return -1;
     // find an empty slot in the process table
       /*
@@ -352,7 +352,7 @@ int join(int *status)
   int quitPID;
   procPtr child; 
   //Check to see if we have any children
-  if(Current->childProcPtr == NULL)
+  if(Current->childProcPtr == NULL && Current->quitChildPtr == NULL)
   {
     if(DEBUG && debugflag)
       USLOSS_Console("Error: No Children\n");
@@ -367,6 +367,7 @@ int join(int *status)
     //child = Current->quitChildPtr;
     *status = child->quitStatus;
     quitPID = child->pid;
+    Current->quitChildPtr = child->nextProcPtr;//Update quit list
     cleanUp(child);
     return quitPID;
   }
@@ -385,6 +386,7 @@ int join(int *status)
   child = Current->quitChildPtr;
   *status = child->quitStatus;
   quitPID = child->pid;
+  Current->quitChildPtr = child->nextProcPtr;
   cleanUp(child);
   return quitPID;  // PID of Child.
 } /* join */
@@ -392,7 +394,8 @@ int join(int *status)
 void cleanUp(procPtr child)
 {
 
-  if(Current->childProcPtr == child)
+  //updateSiblings(child->parentProcPtr, child);
+  /*if(Current->childProcPtr == child)
   {
     Current->childProcPtr = child->nextSiblingPtr;
   }
@@ -412,18 +415,38 @@ void cleanUp(procPtr child)
       temp->nextSiblingPtr = child->nextSiblingPtr;//set the sibling, to the sibling after 
     }
     
-  }
+    }*/
   child->nextSiblingPtr = NULL;
-  Current->quitChildPtr = child->nextProcPtr;
+  //Current->quitChildPtr = child->nextProcPtr;
   //free(child->stack)
   child->status = 00;
   child->pid = -1;
   child->parentProcPtr = NULL;
   strcpy(child->name, "");
   child->priority = -1;
-
 }
-//test
+void updateSiblings(procPtr parent, procPtr child)
+{
+  if(DEBUG && debugflag)
+    USLOSS_Console("Updating Siblings\n");
+  //If the child is the child pointer, move the ptr to the first on
+  //the sibling list
+  if(parent->childProcPtr == child)
+  {
+    parent->childProcPtr = child->nextSiblingPtr;
+  }
+  else
+  {
+    //We go through the parent to make sure we start at the beginning of sibling list
+    procPtr temp = parent->childProcPtr->nextSiblingPtr;//Start at the beginning of the sibling list
+    while(temp->nextSiblingPtr != child)//Stop at the sibling before us
+    {
+      temp = temp->nextSiblingPtr;
+    }
+    temp->nextSiblingPtr = child->nextSiblingPtr;//cut out the child leaving
+  }
+}
+
 /* ------------------------------------------------------------------------
    Name - quit
    Purpose - Stops the child process and notifies the parent of the death by
@@ -448,21 +471,28 @@ void quit(int status)
     //run dispatcher at end of quit
     //Call dispatcher
    
-   if(Current->childProcPtr != NULL)
+   if(Current->childProcPtr != NULL)//Check for active children
    {
       USLOSS_Console("process %d, '%s', has active children. Halting...\n", Current->pid, Current->name);
       USLOSS_Halt(1);
    }
     int index = Current->priority -1;
-    if(ReadyList[index] == NULL)
+    if(Current->quitChildPtr != NULL)
     {
-      Current->quitStatus = status;
-      return;
+      if(DEBUG && debugflag)
+        USLOSS_Console("Zombie Children\n");
+      procPtr temp = Current->quitChildPtr;
+      while(temp != NULL)
+      {
+        procPtr zombie = temp;
+        temp = temp->nextProcPtr;
+        cleanUp(zombie);
+      }
     }
     ReadyList[index] = ReadyList[index]->nextProcPtr;//Take off ready list
     Current->quitStatus = status;//Save status for parent
     procPtr parent = Current->parentProcPtr;//Parent pointer
-    if(parent == NULL)
+    if(parent == NULL)//special case for start1 pretty much
     {
       Current->status = 00;
       //Current->nextSiblingPtr = NULL;
@@ -509,7 +539,8 @@ void quit(int status)
     dispatcher();
 } /* quit */
 
-
+//Make an update siblings function
+//Call here, call in cleanUP
 void addQuitList(procPtr parent)
 {
   procPtr temp = parent->quitChildPtr;//Start of the list
@@ -527,6 +558,7 @@ void addQuitList(procPtr parent)
     temp->nextProcPtr = Current;
     Current->nextProcPtr = NULL;
   }
+  updateSiblings(parent, Current);
 }
 void addReadyList(procPtr parent)
 {
@@ -692,6 +724,7 @@ static void checkDeadlock()
       if(DEBUG && debugflag)
         USLOSS_Console("CheckDeadlock(): numProc = %d. Only Sentinel should be left. Halting...\n", 
           i);
+      dumpProcesses();
       USLOSS_Halt(1);
     }
   }
