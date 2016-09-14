@@ -343,7 +343,7 @@ int join(int *status)
 {
   if((USLOSS_PSR_CURRENT_MODE & USLOSS_PsrGet()) != 1)
   {
-    USLOSS_Console("fork1(): called while in user mode, by process %d. Halting...\n", Current->pid);
+    USLOSS_Console("join(): called while in user mode, by process %d. Halting...\n", Current->pid);
     USLOSS_Halt(1);
   }
   disableInterrupts();
@@ -381,7 +381,7 @@ int join(int *status)
     //Pull the parent off
     Current->status = 2;//joinBlock
     //Move off the ready list here
-    ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;
+    //ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;
     //dipatcher needs to check if current is going to run again and just return
     dispatcher();
   } 
@@ -397,32 +397,7 @@ int join(int *status)
 
 void cleanUp(procPtr child)
 {
-
-  //updateSiblings(child->parentProcPtr, child);
-  /*if(Current->childProcPtr == child)
-  {
-    Current->childProcPtr = child->nextSiblingPtr;
-  }
-  else//Starting here is sibling stuff may want to move to quit or break out into own function
-  {
-    procPtr temp = Current->childProcPtr->nextSiblingPtr;//First sibling
-    if(temp == NULL)
-    {
-      //If there is only one child, i.e childProc and no siblings do nothing
-    }
-    else//We have to maintain the sibling list
-    {
-      while(temp->nextSiblingPtr != child)//stop at the sibling before this guy
-      { 
-        temp = temp->nextSiblingPtr;
-      }
-      temp->nextSiblingPtr = child->nextSiblingPtr;//set the sibling, to the sibling after 
-    }
-    
-    }*/
   child->nextSiblingPtr = NULL;
-  //Current->quitChildPtr = child->nextProcPtr;
-  //free(child->stack)
   child->status = 00;
   child->pid = -1;
   child->parentProcPtr = NULL;
@@ -476,7 +451,7 @@ void quit(int status)
 {
   if((USLOSS_PSR_CURRENT_MODE & USLOSS_PsrGet()) != 1)
   {
-    USLOSS_Console("fork1(): called while in user mode, by process %d. Halting...\n", Current->pid);
+    USLOSS_Console("quit(): called while in user mode, by process %d. Halting...\n", Current->pid);
     USLOSS_Halt(1);
   }
     disableInterrupts();
@@ -489,14 +464,14 @@ void quit(int status)
    
    if(Current->childProcPtr != NULL)//Check for active children
    {
-      USLOSS_Console("process %d, '%s', has active children. Halting...\n", Current->pid, Current->name);
-      dumpProcesses();
+      USLOSS_Console("quit(): process %d, '%s', has active children. Halting...\n", Current->pid, Current->name);
+      if(DEBUG && debugflag)
+        dumpProcesses();
       USLOSS_Halt(1);
    }
-    int index = Current->priority -1;
-    if(Current->quitChildPtr != NULL)
+    //int index = Current->priority -1;
+    if(Current->quitChildPtr != NULL)//Zombie clean up
     {
-      
       procPtr temp = Current->quitChildPtr;
       while(temp != NULL)
       {
@@ -507,7 +482,7 @@ void quit(int status)
         cleanUp(zombie);
       }
     }
-    ReadyList[index] = ReadyList[index]->nextProcPtr;//Take off ready list
+    //ReadyList[index] = ReadyList[index]->nextProcPtr;//Take off ready list
     Current->quitStatus = status;//Save status for parent
     procPtr parent = Current->parentProcPtr;//Parent pointer
     if(parent == NULL)//special case for start1 pretty much
@@ -641,8 +616,6 @@ void dispatcher(void)
       {
         //The next process should be pointed to by the ReadyList[i]
         nextProcess = ReadyList[i];
-        //ReadyList[i] = ReadyList[i]->nextProcPtr;
-        //addReadyList(nextProcess);
         if (DEBUG && debugflag)
           USLOSS_Console("Process found pid: %d\n", nextProcess->pid);
         break;
@@ -654,22 +627,12 @@ void dispatcher(void)
     switching and running.
     */
 
-    if(Current == nextProcess && nextProcess != NULL)//safety check 
+    if(nextProcess == NULL)//Nothing on the ready list 
     {
       if (DEBUG && debugflag)
-        USLOSS_Console("Current is nextProcess\n");
-      if(Current->status == 3)//Time Sliced
-      {
-        if (DEBUG && debugflag)
-          USLOSS_Console("Time Sliced\n");
-          addReadyList(Current);
-          Current = NULL;
-      }
-      else//This process is going to keep running
-      {
-        return;
-      }
-        
+        USLOSS_Console("Nothing on ReadyList\n");
+      return;//Let it keep Running
+      
     }
     if(Current == NULL)
     {
@@ -678,9 +641,26 @@ void dispatcher(void)
       Current = nextProcess;
       Current->timeSlice = USLOSS_Clock();//Start time
       Current->status = 4;
+      ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;
+      //addReadyList(Current);
       //USLOSS_Console("Current pid %d\n", Current->pid);
       p1_switch(0, Current->pid);
       USLOSS_ContextSwitch(NULL, &(Current->state));
+    }
+    if(Current->status == 3 && nextProcess == NULL)//Time sliced with nothing else to run
+    {
+      Current->timeSlice = USLOSS_Clock();
+      Current->status = 4;
+      return;//Set new time slice and let it keep running
+    }
+    if(Current->priority <= nextProcess->priority && Current->status == 4)
+    {
+      if(Current->status == 3)
+      {
+        Current->status = 4;
+        Current->timeSlice = USLOSS_Clock();
+      }
+      return;//Current process keeps running
     }
     /*
     Despite the vairable names, Current has to be the nextProcess in context
@@ -699,6 +679,11 @@ void dispatcher(void)
       Current = nextProcess;//Make Current the new
       Current->timeSlice = USLOSS_Clock();//Start time
       Current->status = 4;
+      ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;
+      if(old->status == 4)
+      {
+        addReadyList(old);
+      }
       //Since this process is about to be put on the processor
       //Move the ReadyList pointer to the next process
       p1_switch(old->pid, Current->pid);
@@ -738,18 +723,22 @@ static void checkDeadlock()
   //dumpProcesses();
   /* checkDeadlock */
   int i;
-  for(i = MAXPROC; i > 1; i--)
+  int count = 0;
+  for(i = 0; i <= MAXPROC; i++)
   {
-    if(ProcTable[i].status != 00 && ProcTable[i].priority != 6)
+    if(ProcTable[i].status != 00)
     {
-      if(DEBUG && debugflag)
-        USLOSS_Console("CheckDeadlock(): numProc = %d. Only Sentinel should be left. Halting...\n", 
-          i);
-      dumpProcesses();
-      USLOSS_Halt(1);
+      count++;
     }
   }
-
+  if(count > 1)
+  {
+    USLOSS_Console("checkDeadlock(): numProc = %d. Only Sentinel should be left. Halting...\n", count);
+    //dumpProcesses();
+    if(DEBUG && debugflag)
+      dumpProcesses();
+    USLOSS_Halt(1);
+  }
   USLOSS_Console("All processes completed.\n");
   USLOSS_Halt(0);
 }
@@ -838,19 +827,23 @@ they have to check if they have been zapped, and notify zapper that they
 have quit.  I.e put them back on the ready list.*/
 int zap(int pid)
 {
+  if(isZapped())//the calling process itself was zapped while in zap
+    return -1;
   if(Current->pid == pid)
   {
-    USLOSS_Console("process %d tried to zap itself. Halting...\n", Current->pid);
+    USLOSS_Console("zap(): process %d tried to zap itself.  Halting...\n", Current->pid);
     USLOSS_Halt(1);
   }
-  if(ProcTable[pid].status == 00)
+  if(ProcTable[pid % 50].status == 00 || ProcTable[pid % 50].pid != pid)
   {
-    USLOSS_Console("Trying to zap nonexistent process\n");
+    USLOSS_Console("zap(): process being zapped does not exist.  Halting...\n");
     USLOSS_Halt(1);
   }
-  Current->status = 7;//Zap block
-  ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;//Move off ready list
   procPtr toZap = &ProcTable[pid % 50];//Proc we want to zap
+  if((toZap->status == 5) || (toZap->status == 6))//Process has already called quit
+    return 0;
+  Current->status = 7;//Zap block
+  //ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;//Move off ready list
   toZap->zapList[Current->pid % 50] = 1;//Use the Zappers pid as an index in an array
   toZap->isZapped = 1;
   //isZapped call go here?
@@ -887,7 +880,7 @@ int blockMe(int newStatus)
   //Do we check to see if its been zapped before or after we set the new status
   Current->status = newStatus;
   //move off ready list
-  ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;
+  //ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;
   dispatcher();
   if(Current->isZapped)//1 if zapped, will run
     return -1;
