@@ -121,7 +121,7 @@ void startup()
 void clock_handler(int dev, void *arg)
 {
   if(DEBUG && debugflag)
-    USLOSS_Console("Clock Handler called\n");
+    USLOSS_Console("Clock Handler(): called\n");
   int currentTime = USLOSS_Clock();
   int procTime = Current->timeSlice;
   if (DEBUG && debugflag)
@@ -175,13 +175,6 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
       if((priority < 1 ) || (priority > 6))
         return -1;
     // find an empty slot in the process table
-      /*
-        While loop that runs 50 times, maxprocs, if the nextPid
-        mod 50 fits in the tablle we set proc slot to that value, 
-        increment pid, and break out of the loop.  If that slot
-        is not open we increment i to move to the next slot and
-        move to the next pid.
-      */
     int i = 1;
     if (DEBUG && debugflag)
       USLOSS_Console("nextPID: %d\n", nextPid);
@@ -221,7 +214,8 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
     ProcTable[procSlot].stackSize = stacksize;
     ProcTable[procSlot].stack = malloc(stacksize * sizeof(char));
     
-    //gotta walk the ready list and set the previous proc, next proc ptr to this proc
+    //gotta walk the ready list and set the previous proc's
+    //next proc ptr to this proc
 
     if(ReadyList[priority -1] == NULL)
     {
@@ -254,10 +248,9 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
     {
       
       ProcTable[procSlot].parentProcPtr = &ProcTable[Current->pid % 50];
-      //
+      //Check to see if we have a child
       if(Current->childProcPtr == NULL)
       {//If not set it here
-        //USLOSS_Console("%s, %d", ProcTable[procSlot].name, ProcTable[procSlot].pid);
         Current->childProcPtr = &(ProcTable[procSlot]);
         if (DEBUG && debugflag)
           USLOSS_Console("Setting Child\n");
@@ -267,35 +260,30 @@ int fork1(char *name, int (*startFunc)(char *), char *arg,
         procPtr temp = Current->childProcPtr;
         while(temp->nextSiblingPtr != NULL)//If we have a sibling
         {
-          //We got an infinite loop here some how
           temp = temp->nextSiblingPtr;//Move to the sibling until we dont
         }
         temp->nextSiblingPtr = &(ProcTable[procSlot]);//Set the sibling
       }//End of Sibling else
     }//End of Current Null Check
    
-    //USLOSS_Console("Am I making it to here?\n");
     ProcTable[procSlot].priority = priority;//priority
-    ProcTable[procSlot].status = 1;//status is it ready(1) at start up?
+    ProcTable[procSlot].status = 1;//status is it ready(1) at start up
     
     // Initialize context for this process, but use launch function pointer for
     // the initial value of the process's program counter (PC)
 
-    //USLOSS_Console("Am I making it to here?\n");
     USLOSS_ContextInit(&(ProcTable[procSlot].state), USLOSS_PsrGet(),
                        ProcTable[procSlot].stack,
                        ProcTable[procSlot].stackSize,
                        launch);
     
-
-    // More stuff to do here... Dispatcher? Ready list? Launch?
     if(priority != 6)//Disaptcher not called with Sentinel 
     {
       dispatcher();
     }
     
 
-    return ProcTable[procSlot].pid;  // -1 is not correct! Here to prevent warning. should be PID of child
+    return ProcTable[procSlot].pid;  //PID of Child
 } /* fork1 */
 
 /* ------------------------------------------------------------------------
@@ -314,7 +302,6 @@ void launch()
         USLOSS_Console("launch(): started\n");
 
     // Enable interrupts
-    //PSRset() set second bit to 1
     USLOSS_PsrSet(USLOSS_PsrGet() | USLOSS_PSR_CURRENT_INT);
     // Call the function passed to fork1, and capture its return value
     result = Current->startFunc(Current->startArg);
@@ -364,7 +351,6 @@ int join(int *status)
   {
     if(DEBUG && debugflag)
       USLOSS_Console("Child on quit list: \n");
-    //child = Current->quitChildPtr;
     *status = child->quitStatus;
     quitPID = child->pid;
     Current->quitChildPtr = child->nextProcPtr;//Update quit list
@@ -380,8 +366,6 @@ int join(int *status)
       USLOSS_Console("Join Blocking\n");
     //Pull the parent off
     Current->status = 2;//joinBlock
-    //Move off the ready list here
-    //ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;
     //dipatcher needs to check if current is going to run again and just return
     dispatcher();
   } 
@@ -418,11 +402,8 @@ void updateSiblings(procPtr parent, procPtr child)
   {
     //We go through the parent to make sure we start at the beginning of sibling list
     procPtr temp = parent->childProcPtr->nextSiblingPtr;//Start at the beginning of the sibling list
-    //Child is process is 6, so temp is process 7
     if(DEBUG && debugflag)
       USLOSS_Console("Sibling PID: %d\n", temp->pid);
-    //the next sibling is null and doesnt equal child,
-    //temp gets set to NULL and we try agian and fault
     if(temp == child)//Only two children, child and one sibling
     {
       parent->childProcPtr->nextSiblingPtr = temp->nextSiblingPtr;
@@ -457,10 +438,6 @@ void quit(int status)
     disableInterrupts();
     if (DEBUG && debugflag)
         USLOSS_Console("%s called quit\n", Current->name);
-  //in Quit take current off ready list
-    //Status as dead,gone,empty etc
-    //run dispatcher at end of quit
-    //Call dispatcher
    
    if(Current->childProcPtr != NULL)//Check for active children
    {
@@ -469,7 +446,6 @@ void quit(int status)
         dumpProcesses();
       USLOSS_Halt(1);
    }
-    //int index = Current->priority -1;
     if(Current->quitChildPtr != NULL)//Zombie clean up
     {
       procPtr temp = Current->quitChildPtr;
@@ -482,22 +458,16 @@ void quit(int status)
         cleanUp(zombie);
       }
     }
-    //ReadyList[index] = ReadyList[index]->nextProcPtr;//Take off ready list
     Current->quitStatus = status;//Save status for parent
     procPtr parent = Current->parentProcPtr;//Parent pointer
     if(parent == NULL)//special case for start1 pretty much
     {
       Current->status = 00;
-      //Current->nextSiblingPtr = NULL;
-      //Current->quitChildPtr = Current->nextProcPtr;
-      //free(child->stack)
-      //Current->status = 00;
       Current->pid = -1;
       Current->parentProcPtr = NULL;
       strcpy(Current->name, "");
       Current->priority = -1;
       p1_quit(Current->pid);
-      //Probably gonna want more clean up here
       Current = NULL;
       dispatcher();
     }
@@ -532,8 +502,6 @@ void quit(int status)
     dispatcher();
 } /* quit */
 
-//Make an update siblings function
-//Call here, call in cleanUP
 void addQuitList(procPtr parent)
 {
   procPtr temp = parent->quitChildPtr;//Start of the list
@@ -639,15 +607,23 @@ void dispatcher(void)
     {
       if(Current->status == 3)
       {
+        if(DEBUG && debugflag)
+        {
+          USLOSS_Console("Renewing Current: Time\n");
+        }
         Current->status = 4;
-        Current->procTime += USLOSS_Clock() - Current->timeSlice;
-        Current->timeSlice = USLOSS_Clock();
+        Current->procTime += USLOSS_Clock() - Current->timeSlice;//Increase total time 
+        Current->timeSlice = USLOSS_Clock();//Set new start time
         return;//Keep Running
       }
       if(Current->status == 4)
       {
-        Current->procTime += USLOSS_Clock() - Current->timeSlice;
-        Current->timeSlice = USLOSS_Clock();
+        if(DEBUG && debugflag)
+        {
+          USLOSS_Console("Renwewing Current\n");
+        }
+        Current->procTime += USLOSS_Clock() - Current->timeSlice;//Increase total time
+        Current->timeSlice = USLOSS_Clock();//Set new start time
         return;//Current process keeps running
       }
     }
@@ -660,21 +636,20 @@ void dispatcher(void)
     
       if (DEBUG && debugflag)
         USLOSS_Console("Current is not Null\n");
-      //USLOSS_Console("Current pid: %d Next pid: %d\n", Current->pid, nextProcess->pid);
-      //I think this is the only place we need this line
-      //total time = current time - start time
-      Current->procTime += USLOSS_Clock() - Current->timeSlice;//Current time - start time
+      
+      Current->procTime += USLOSS_Clock() - Current->timeSlice;//Update total time
       procPtr old = Current;//Save old status
       Current = nextProcess;//Make Current the new
-      Current->timeSlice = USLOSS_Clock();//Start time
+      Current->timeSlice = USLOSS_Clock();
       Current->status = 4;
+      //Since this process is about to be put on the processor
+      //Move the ReadyList pointer to the next process
       ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;
       if(old->status == 4 || old->status == 3)
       {
         addReadyList(old);
       }
-      //Since this process is about to be put on the processor
-      //Move the ReadyList pointer to the next process
+      
       p1_switch(old->pid, Current->pid);
       USLOSS_ContextSwitch(&(old->state), &(Current->state));
     
@@ -811,6 +786,7 @@ void disableInterrupts()
         // We ARE in kernel mode
         USLOSS_PsrSet( USLOSS_PsrGet() & ~USLOSS_PSR_CURRENT_INT );
 } /* disableInterrupts */
+
 /*Caller blocks, waits for zapped process to quit.  When processes quit
 they have to check if they have been zapped, and notify zapper that they
 have quit.  I.e put them back on the ready list.*/
@@ -832,10 +808,10 @@ int zap(int pid)
   if((toZap->status == 5) || (toZap->status == 6))//Process has already called quit
     return 0;
   Current->status = 7;//Zap block
-  //ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;//Move off ready list
+  
   toZap->zapList[Current->pid % 50] = 1;//Use the Zappers pid as an index in an array
   toZap->isZapped = 1;
-  //isZapped call go here?
+  
   dispatcher();
   if(isZapped())//the calling process itself was zapped while in zap
     return -1;
@@ -846,19 +822,14 @@ int isZapped()
 {
   return Current->isZapped;//If we dont find a zap entry
 }
-/*
-  Should we update the procTime here? Take the current time, subtract the start
-  time and add it here?  Then we would have to reset the start time.  The 
-  procTime as a whole needs to be rethought I dont think its being calculated
-  correctly
-  */
+
 int readtime()
 {
-  return Current->procTime;
+  //Adds the time used since last dispatcher call
+  //So includes the time from the current time slice
+  return Current->procTime += (USLOSS_Clock() - Current->timeSlice);
 }
-/*
-  What does if process was zapped while blocked mean?  How do we check that here?
-  */
+
 int blockMe(int newStatus)
 {
   if(newStatus < 10)
@@ -866,10 +837,7 @@ int blockMe(int newStatus)
     USLOSS_Console("New Status is less than 10. Halting...\n");
     USLOSS_Halt(1);
   }
-  //Do we check to see if its been zapped before or after we set the new status
   Current->status = newStatus;
-  //move off ready list
-  //ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;
   dispatcher();
   if(Current->isZapped)//1 if zapped, will run
     return -1;
@@ -900,19 +868,21 @@ int unblockProc(int pid)
 
 int readCurStartTime()
 {
-  return Current->procTime += (USLOSS_Clock() - Current->timeSlice);
+  return Current->timeSlice;
 }
 
 void timeSlice()
 {
+  if(DEBUG && debugflag)
+    USLOSS_Console("Checking time slice\n");
   int currentTime = USLOSS_Clock();
   int procTime = Current->timeSlice;//Start time
+  if(DEBUG && debugflag)
+    USLOSS_Console("Current Time %d, PID: %d, Start Time %d -- %d\n", currentTime, Current->pid, procTime, currentTime - procTime);
   if(currentTime - procTime > 80000)
   {
     Current->status = 3;
-    //Current->procTime += USLOSS_Clock() - Current->timeSlice;
     dispatcher();
-    //Need to double check how dispatcher handles start time and time slices 
   }
 }
 
