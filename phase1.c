@@ -602,7 +602,6 @@ void dispatcher(void)
     procPtr nextProcess = NULL;//next process in ready list
     int i;
 
-    //if(Current->status != 00)
     //Look through our priority queues
     for(i = 0; i < 6; i++)
     {
@@ -622,18 +621,8 @@ void dispatcher(void)
       }
     }
     USLOSS_PsrSet(USLOSS_PsrGet() | USLOSS_PSR_CURRENT_INT);//enable interrupts
-    /*
-    With help from the TA, we came up with this code that got start1 
-    switching and running.
-    */
-
-    if(nextProcess == NULL)//Nothing on the ready list 
-    {
-      if (DEBUG && debugflag)
-        USLOSS_Console("Nothing on ReadyList\n");
-      return;//Let it keep Running
-      
-    }
+   
+    
     if(Current == NULL)
     {
       if (DEBUG && debugflag)
@@ -642,33 +631,33 @@ void dispatcher(void)
       Current->timeSlice = USLOSS_Clock();//Start time
       Current->status = 4;
       ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;
-      //addReadyList(Current);
-      //USLOSS_Console("Current pid %d\n", Current->pid);
       p1_switch(0, Current->pid);
       USLOSS_ContextSwitch(NULL, &(Current->state));
     }
-    if(Current->status == 3 && nextProcess == NULL)//Time sliced with nothing else to run
-    {
-      Current->timeSlice = USLOSS_Clock();
-      Current->status = 4;
-      return;//Set new time slice and let it keep running
-    }
-    if(Current->priority <= nextProcess->priority && Current->status == 4)
+  
+    if(Current->priority <= nextProcess->priority)
     {
       if(Current->status == 3)
       {
         Current->status = 4;
+        Current->procTime += USLOSS_Clock() - Current->timeSlice;
         Current->timeSlice = USLOSS_Clock();
+        return;//Keep Running
       }
-      return;//Current process keeps running
+      if(Current->status == 4)
+      {
+        Current->procTime += USLOSS_Clock() - Current->timeSlice;
+        Current->timeSlice = USLOSS_Clock();
+        return;//Current process keeps running
+      }
     }
     /*
     Despite the vairable names, Current has to be the nextProcess in context
     switch and there has to be another variable holding what is currently
     in current.  These names came with the skeleton.
     */
-    else
-    {
+    //Lower Priority process to run
+    
       if (DEBUG && debugflag)
         USLOSS_Console("Current is not Null\n");
       //USLOSS_Console("Current pid: %d Next pid: %d\n", Current->pid, nextProcess->pid);
@@ -680,7 +669,7 @@ void dispatcher(void)
       Current->timeSlice = USLOSS_Clock();//Start time
       Current->status = 4;
       ReadyList[Current->priority -1] = ReadyList[Current->priority -1]->nextProcPtr;
-      if(old->status == 4)
+      if(old->status == 4 || old->status == 3)
       {
         addReadyList(old);
       }
@@ -688,7 +677,7 @@ void dispatcher(void)
       //Move the ReadyList pointer to the next process
       p1_switch(old->pid, Current->pid);
       USLOSS_ContextSwitch(&(old->state), &(Current->state));
-    }
+    
 } /* dispatcher */
 
 
@@ -911,17 +900,17 @@ int unblockProc(int pid)
 
 int readCurStartTime()
 {
-  return Current->timeSlice;
+  return Current->procTime += (USLOSS_Clock() - Current->timeSlice);
 }
 
 void timeSlice()
 {
   int currentTime = USLOSS_Clock();
   int procTime = Current->timeSlice;//Start time
-  if(currentTime - procTime >= 80000)
+  if(currentTime - procTime > 80000)
   {
     Current->status = 3;
-    Current->procTime += USLOSS_Clock() - Current->timeSlice;
+    //Current->procTime += USLOSS_Clock() - Current->timeSlice;
     dispatcher();
     //Need to double check how dispatcher handles start time and time slices 
   }
