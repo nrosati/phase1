@@ -1,45 +1,51 @@
 
-TARGET = libphase1.a
-ASSIGNMENT = 452phase1
+TARGET = libphase2.a
+ASSIGNMENT = 452phase2
 CC = gcc
 AR = ar
 
-COBJS = phase1.o
+COBJS = phase2.o
 CSRCS = ${COBJS:.o=.c}
 
-HDRS = kernel.h phase1.h
+HDRS = message.h
+
+# When using your phase1 library:
+#PHASELIB = phase1
+
+# When using one of Patrick's phase1 libraries
+#PHASE1LIB = patrickphase1debug
+PHASE1LIB = patrickphase1
 
 INCLUDE = ./usloss/include
 
-CFLAGS = -Wall -g -I${INCLUDE}
+CFLAGS = -Wall -g -std=gnu99 -I${INCLUDE} -I.
 
 UNAME := $(shell uname -s)
 
 ifeq ($(UNAME), Darwin)
-	CFLAGS += -D_XOPEN_SOURCE      # use for Mac, NOT for Linux!!
+        CFLAGS += -D_XOPEN_SOURCE
 endif
 
-LDFLAGS = -L. -L./usloss/lib
+LDFLAGS += -L./usloss/lib -L.
 
 TESTDIR = testcases
-TESTS = test00 test01 test02 test03 test04 test05 test06 test07 test08 \
-        test09 test10 test11 test12 test13 test14 test15 test16 test17 \
-        test18 test19 test20 test21 test22 test23 test24 test25 test26 \
-        test27 test28 test29 test30 test31 test32 test33 test34 test35 \
-        test36 
-LIBS = -lphase1 -lusloss
+TESTS= test00 test01 test02 test03 test04 test05 test06 test07 test08 \
+       test09 test10 test11 test12 test13 test14 test15 test16 test17 \
+       test18 test19 test20 test21 test22
+
+LIBS = -l$(PHASE1LIB) -lphase2 -lusloss
 
 $(TARGET):	$(COBJS)
 		$(AR) -r $@ $(COBJS) 
 
-$(TESTS):	$(TARGET) p1.o
-	$(CC) $(CFLAGS) -I. -c $(TESTDIR)/$@.c
+$(TESTS):	$(TARGET) $(TESTDIR)/$$@.c p1.o
+	$(CC) $(CFLAGS) -c $(TESTDIR)/$@.c
 	$(CC) $(LDFLAGS) -o $@ $@.o $(LIBS) p1.o
 
 clean:
-	rm -f $(COBJS) $(TARGET) p1.o test??.o test?? test??.txt core term*.out
+	rm -f $(COBJS) $(TARGET) core term*.out test*.o $(TESTS) p1.o
 
-phase1.o:	kernel.h
+phase2.o:	message.h
 
-submit:	$(CSRCS) $(HDRS) Makefile
-	tar cvzf phase1.tgz $(CSRCS) $(HDRS) Makefile
+submit: $(CSRCS) $(HDRS) Makefile
+	tar cvzf phase2.tgz $(CSRCS) $(HDRS) Makefile
