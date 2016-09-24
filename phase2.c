@@ -22,19 +22,26 @@ void enableInterrupts();
 void initMailBoxTable();
 void initProctable2();
 void initMailSlots();
-void addWaitList(mailbox box, mboxProcPtr toAdd);
-void removeWaitList(mailbox box, mboxProcPtr toRemove);
+void addWaitList(int mbox_id, int procPID);
+void removeWaitList(int mbox_id);
 int availableSlotCount();
+void assignSlot(int mbox_id, void *msg_ptr, int msg_size);
+mailboxPtr getMbox(int mbox_id);
+void addSlotList(int mbox_id, slotPtr slot);
+void removeSlotList(int mbox_id);
+void freeSlot(int mbox_id, slotPtr slot);
+void setProc(int procPID, int mbox_id, void *msg_ptr, int size, int status);
+void cleanUpProc(int pid);
 /* -------------------------- Globals ------------------------------------- */
 
-int debugflag2 = 1;
+int debugflag2 = 0;
 int availableSlots = MAXSLOTS;//Dynamic, number of slots not in use
 mboxProc procTable2[MAXPROC];
 // the mail boxes 
 mailbox MailBoxTable[MAXMBOX];
 
 // also need array of mail slots
-slotPtr MailSlotTable[MAXSLOTS];
+mailSlot MailSlotTable[MAXSLOTS];
 //array of function ptrs to system call handlers, ...
 void (*sysCallHandlers[MAXSYSCALLS]) (int dev, void * arg);
 
@@ -102,7 +109,7 @@ int start1(char *arg)
 int MboxCreate(int slots, int slot_size)
 {
   check_kernel_mode("MboxCreate");
-  if(slot_size > MAX_MESSAGE || slots > availableSlots)//openSlots here may not work
+  if(slot_size > MAX_MESSAGE)//openSlots here may not work
   {
     if(DEBUG2 && debugflag2)
       USLOSS_Console("MboxCreate(): Error\n");
@@ -128,7 +135,34 @@ int MboxCreate(int slots, int slot_size)
   return id;//-1 if no slot found, mboxId if otherwise
 } /* MboxCreate */
 
+int MboxRelease(int mailboxID)
+{
+  check_kernel_mode("MboxRelease\n");
+  disableInterrupts();
+  if(MailBoxTable[mailboxID].mboxID == -1)
+  {
+    return -1;
+  }
+  mailboxPtr box = getMbox(mailboxID);
+  mboxProcPtr temp = box->waitListHead;
+  if(temp == NULL)
+  {
+    return 0;
+  }
+  while(temp != NULL)
+  {
+    temp->status = 13;
+    int pid = temp->pid;
+    unblockProc(pid);
+    temp = temp->nextmboxProcPtr;
+  }
 
+  if(isZapped())
+  {
+    return -3;
+  }
+  return 0;
+}
 /* ------------------------------------------------------------------------
    Name - MboxSend
    Purpose - Put a message into a slot for the indicated mailbox.
@@ -141,12 +175,105 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
 {
   check_kernel_mode("MboxSend");
   disableInterrupts();
+  if(mbox_id < 0 || mbox_id > MAXMBOX || msg_size > MAX_MESSAGE)
+  {
+    if(debugflag2 && DEBUG2)
+    {
+      USLOSS_Console("Sending Parameter errors\n");
+    }
+    return -1;
+  }
+  mailboxPtr box = getMbox(mbox_id);
+  /*Im thinking we may want two wait lists, one for blocked senders
+  and one for blocked recievers, at the same time though I feel like
+  we should never have both, if we have blocked recievers its because the 
+  slots are full so as long as someone calls recieve there will never be a blocked
+  reciever.  Conversly if there are blocked recievers, senders should never block.  
+  So it seems weird to only have one list buttttt theoritically I think it will work.
+  */
+  if(box->waitListHead != NULL && box->waitListHead->status == 11)//recieve blocked
+  {
+    mboxProcPtr proc = box->waitListHead;
+    memcpy(proc->procMessagePtr, msg_ptr, msg_size);
+    proc->messageSize = msg_size;
+    int pid = box->waitListHead->pid;
+    removeWaitList(mbox_id);
+    unblockProc(pid);
+  }
+  if(box->openSlots <= 0)
+  {
+    setProc(getpid(), mbox_id, msg_ptr, msg_size, 12);
+    addWaitList(mbox_id, getpid() %50);
+    blockMe(12);
+    disableInterrupts();
+    if(procTable2[getpid() % 50].status == 13)
+    {
+      return -3;
+    }
+  }
+  assignSlot(mbox_id, msg_ptr, msg_size);
+  box->openSlots--;
 
   enableInterrupts();
-  return -1;
+  return 0;
 } /* MboxSend */
 
+void assignSlot(int mbox_id, void *msg_ptr, int msg_size)
+{
+  if(availableSlots <= 0)
+  {
+    if(DEBUG2 && debugflag2)
+    {
+      USLOSS_Console("Out of Slots\n");
+    }
+    USLOSS_Halt(1);
+  }
+  int i;
+  for(i = 0; i < MAXSLOTS; i++)
+  {
+    if(MailSlotTable[i].mboxID == -1)
+    {
+      MailSlotTable[i].mboxID = mbox_id;
+      MailSlotTable[i].messageSize = msg_size;
+      memcpy(&MailSlotTable[i].slotMessage, msg_ptr, msg_size);
+      availableSlots--;
+      addSlotList(mbox_id, &MailSlotTable[i]);
+      cleanUpProc(getpid() % 50);//Message is in a slot so we dont need it in proc table?
+      return;
+    }
+  }
+}
+void addSlotList(int mbox_id, slotPtr slot)
+{
+  mailboxPtr box = getMbox(mbox_id);
+  if(box->slotListHead == NULL && box->slotListTail == NULL)
+  {
+    box->slotListHead = slot;//want it to be head = slot
+    box->slotListTail = slot;
+  }
+  else
+  {
+    box->slotListTail->nextSlotPtr = slot;
+    box->slotListTail = slot;
+  }
+}
 
+void removeSlotList(int mbox_id)
+{
+  mailboxPtr box = getMbox(mbox_id);
+  if(box->slotListHead == box->slotListTail)//if only one on waitlist
+  {
+    box->slotListHead = box->slotListHead->nextSlotPtr;
+    box->slotListTail = box->slotListTail->nextSlotPtr;
+  }
+  else
+    box->slotListHead = box->slotListHead->nextSlotPtr;
+}
+
+mailboxPtr getMbox(int mbox_id)
+{
+  return &MailBoxTable[mbox_id];
+}
 /* ------------------------------------------------------------------------
    Name - MboxReceive
    Purpose - Get a msg from a slot of the indicated mailbox.
@@ -160,10 +287,63 @@ int MboxReceive(int mbox_id, void *msg_ptr, int msg_size)
 {
   check_kernel_mode("MboxRecieve");
   disableInterrupts();
+  int actualSize;
+  if(mbox_id < 0 || mbox_id > MAXMBOX || msg_size > MAX_MESSAGE || msg_size < 0)
+  {
+    if(debugflag2 && DEBUG2)
+    {
+      USLOSS_Console("Sending Parameter errors\n");
+    }
+    return -1;
+  }
+  mailboxPtr box = getMbox(mbox_id);
 
+  if(box->slotListHead != NULL)//We have a slot with a message in it???
+  {
+    slotPtr slot = box->slotListHead;
+    memcpy(msg_ptr, slot->slotMessage, msg_size);
+    actualSize = slot->messageSize;
+    freeSlot(mbox_id, slot);
+    //cleanProc()?
+    if(box->waitListHead != NULL && box->waitListHead->status == 12)//Check for procs send blocked
+    {
+      int pid = box->waitListHead->pid;
+      removeWaitList(mbox_id);
+      unblockProc(pid);
+    }
+  }
+  else if(box->slotListHead == NULL && box->waitListHead != NULL)//0 slot mailbox
+  {
+    if(DEBUG2 && debugflag2)
+    {
+      USLOSS_Console("Recieiving on 0 slot mailbox\n");
+    }
+  }
+  else
+  {
+    setProc(getpid(), mbox_id, msg_ptr, msg_size, 11);
+    addWaitList(mbox_id, getpid() %50);
+    blockMe(11);
+    disableInterrupts();
+    actualSize = procTable2[getpid() % 50].messageSize;
+  }
+  int status = procTable2[getpid() % 50].status;
+  cleanUpProc(getpid() % 50);//Our message has been recieved
   enableInterrupts();
-  return -1;
+  if(status == 13)
+      return -3;
+  return actualSize;//Actual message size
 } /* MboxReceive */
+void freeSlot(int mbox_id, slotPtr slot)
+{
+  mailboxPtr box = getMbox(mbox_id);
+  slot->mboxID = -1;
+  strcpy(slot->slotMessage, "");
+  availableSlots++;
+  box->openSlots++;
+  removeSlotList(mbox_id);
+}
+
 
 void disableInterrupts()
 {
@@ -209,6 +389,8 @@ void initMailBoxTable()
     MailBoxTable[i].mboxID = -1;
     MailBoxTable[i].waitListHead = NULL;
     MailBoxTable[i].waitListTail = NULL;
+    MailBoxTable[i].slotListHead = NULL;
+    MailBoxTable[i].slotListTail = NULL;
   }
 }
 
@@ -217,8 +399,11 @@ void initMailSlots()
   int i;
   for(i = 0; i < MAXSLOTS; i++)
   {
-    MailSlotTable[i]->mboxID = -1;
-    MailSlotTable[i]->status = -1;
+    MailSlotTable[i].mboxID = -1;
+    MailSlotTable[i].status = -1;
+    MailSlotTable[i].messageSize = -1;
+    strcpy(MailSlotTable[i].slotMessage, "");
+    MailSlotTable[i].nextSlotPtr = NULL;
   }
 }
 
@@ -228,51 +413,60 @@ void initProctable2()
   for(i = 0; i < MAXPROC; i++)
   {
     procTable2[i].pid = -1;
-    procTable2[i].nextMboxProcPtr = NULL;
+    procTable2[i].nextmboxProcPtr = NULL;
     procTable2[i].status = -1;
     procTable2[i].mboxID = -1;
+    procTable2[i].procMessagePtr = NULL;
+    procTable2[i].messageSize = -1;
   }
 }
-
-void addWaitList(mailbox box, mboxProcPtr toAdd)
+//Save the message from this proc in its entry in procTable2
+void setProc(int procPID, int mbox_id, void *msg_ptr, int size, int status)
 {
-  mboxProcPtr head = box.waitListHead;
-  mboxProcPtr tail = box.waitListTail;
-  if(head == NULL && tail == NULL)
+  mboxProcPtr proc = &procTable2[procPID % 50];
+  proc->pid = procPID % 50;
+  proc->mboxID = mbox_id;
+  proc->procMessagePtr = msg_ptr;
+  proc->messageSize = size;
+  proc->status = status;
+
+}
+
+void cleanUpProc(int pid)
+{
+  mboxProcPtr proc = &procTable2[pid];
+  proc->pid  = -1;
+  proc->mboxID = -1;
+  proc->procMessagePtr = NULL;
+  proc->messageSize = -1;
+  proc->status = -1;
+}
+void addWaitList(int mbox_id, int procPID)
+{
+  mailboxPtr box = getMbox(mbox_id);
+  mboxProcPtr proc = &procTable2[procPID % 50];
+  if(box->waitListHead == NULL && box->waitListTail == NULL)
   {
-    head = toAdd;
-    tail = toAdd;
+    box->waitListHead = proc;
+    box->waitListTail = proc;
   }
   else
   {
-    tail->nextMboxProcPtr = toAdd;
-    tail = toAdd;
+    box->waitListTail->nextmboxProcPtr = proc;
+    box->waitListTail = proc;
   }
 }
 
-void removeWaitList(mailbox box, mboxProcPtr toRemove)
+void removeWaitList(int mbox_id)
 {
-  mboxProcPtr head = box.waitListHead;
-  mboxProcPtr tail = box.waitListTail;
-  //first case want to remove the head
-  if(head == toRemove)
+  mailboxPtr box = getMbox(mbox_id);
+  if(box->waitListHead == box->waitListTail)//if only one on waitlist
   {
-    head = toRemove->nextMboxProcPtr;//Move head to the next item on list
-    if(tail == toRemove)//If tail is also toRemove, only one item on list
-    {
-      tail = toRemove->nextMboxProcPtr;//Should set this to NULL
-    }
+    box->waitListHead = box->waitListHead->nextmboxProcPtr;
+    box->waitListTail = box->waitListTail->nextmboxProcPtr;
   }
-  mboxProcPtr temp = head;//Will this work?  Or have to go from the box again?
-  while(temp->nextMboxProcPtr != toRemove)
-  {
-    temp = temp->nextMboxProcPtr;//Walk the list
-  }
-  if(tail == toRemove)//If we are removing the tail
-  {
-    tail = temp;//Set it to the proc before toRemove
-  }
-  temp = temp->nextMboxProcPtr->nextMboxProcPtr;//cut out the proc to remove
+  else
+    box->waitListHead = box->waitListHead->nextmboxProcPtr;
 }
 
 int availableSlotCount()
@@ -281,7 +475,7 @@ int availableSlotCount()
   int count = 0;
   for(i = 0; i < MAXSLOTS; i++)
   {
-    if(MailSlotTable[i]->status == -1)
+    if(MailSlotTable[i].status == -1)
     {
       count++;
     }
@@ -289,3 +483,7 @@ int availableSlotCount()
   return count;
 }
 
+int check_io()
+{//Supposed to see if io mailboxes have anyone waiting
+  return 0;//Tmemporary
+}

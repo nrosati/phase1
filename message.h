@@ -6,6 +6,8 @@ typedef struct mailbox   mailbox;
 typedef struct mboxProc *mboxProcPtr;
 //Mine
 typedef struct mboxProc   mboxProc;
+typedef struct mailSlot   mailSlot;
+typedef struct mailbox   *mailboxPtr;
 
 
 struct mailbox {
@@ -13,16 +15,20 @@ struct mailbox {
     // other items as needed...
     mboxProcPtr   waitListHead;
     mboxProcPtr   waitListTail;
-    int           maxSlots;
-    int           slotSize;
-    int           openSlots;
+    int           maxSlots;//Number of slots mailbox can have
+    int           slotSize;//Max size of message
+    int           openSlots;//Number of slots mailbox has available
+    slotPtr       slotListHead;
+    slotPtr       slotListTail;
 };
 
 struct mailSlot {
     int       mboxID;
     int       status;
     // other items as needed...
-    char      message[MAX_MESSAGE];
+    char      slotMessage[MAX_MESSAGE];
+    slotPtr   nextSlotPtr;
+    int       messageSize;
 };
 
 struct psrBits {
@@ -41,7 +47,9 @@ union psrValues {
 /**********MINE*************/
 struct mboxProc {
     int             pid;
-    mboxProcPtr     nextMboxProcPtr;
+    mboxProcPtr     nextmboxProcPtr;
     int             status;
     int             mboxID;
+    void            *procMessagePtr;
+    int             messageSize;
 };
