@@ -11,6 +11,7 @@
 #include <usloss.h>
 #include "message.h"
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 /* ------------------------- Prototypes ----------------------------------- */
@@ -32,6 +33,12 @@ void removeSlotList(int mbox_id);
 void freeSlot(int mbox_id, slotPtr slot);
 void setProc(int procPID, int mbox_id, void *msg_ptr, int size, int status);
 void cleanUpProc(int pid);
+void clockHandler2(int dev, void *arg);
+void termHandler(int dev, void *arg);
+void diskHandler(int dev, void *arg);
+void syscallHandler(int dev, void *arg);
+void nullsys(systemArgs *args);
+void resetBox(int mailboxID);
 /* -------------------------- Globals ------------------------------------- */
 
 int debugflag2 = 0;
@@ -43,8 +50,7 @@ mailbox MailBoxTable[MAXMBOX];
 // also need array of mail slots
 mailSlot MailSlotTable[MAXSLOTS];
 //array of function ptrs to system call handlers, ...
-void (*sysCallHandlers[MAXSYSCALLS]) (int dev, void * arg);
-
+void (*systemCallVec[50])(systemArgs *args);
 
 //
 
@@ -78,9 +84,26 @@ int start1(char *arg)
     //More procTable initialization?
 
     //Initialize USLOSS_IntVec and system call handlers,
+    USLOSS_IntVec[USLOSS_CLOCK_INT] = clockHandler2;
+    USLOSS_IntVec[USLOSS_TERM_INT] = termHandler;
+    USLOSS_IntVec[USLOSS_DISK_INT] = diskHandler;
+    USLOSS_IntVec[USLOSS_SYSCALL_INT] = syscallHandler;
+    int i;
+    for(i = 0; i < 50; i++)
+    {
+      systemCallVec[i] = nullsys;
+    }
 
     //allocate mailboxes for interrupt handlers.  Etc... 
     //MboxCreate.....
+    MboxCreate(0, 50);//Yeah? 0 slot mailbox so doesnt matter I guess
+    MboxCreate(0, 50);//Id 1
+    MboxCreate(0, 50);
+    MboxCreate(0, 50);
+    MboxCreate(0, 50);//Id 4
+    MboxCreate(0, 50);//Id 5
+    MboxCreate(0, 50);//ID 6
+
     enableInterrupts();
 
     // Create a process for start2, then block on a join until start2 quits
@@ -109,13 +132,14 @@ int start1(char *arg)
 int MboxCreate(int slots, int slot_size)
 {
   check_kernel_mode("MboxCreate");
-  if(slot_size > MAX_MESSAGE)//openSlots here may not work
+  disableInterrupts();
+  if(slot_size > MAX_MESSAGE || slots < 0 || slot_size < 0)//openSlots here may not work
   {
     if(DEBUG2 && debugflag2)
       USLOSS_Console("MboxCreate(): Error\n");
+    enableInterrupts();
     return -1;
   }
-  disableInterrupts();
   int i;
   int id = -1;
   for(i = 0; i < MAXMBOX; i++)
@@ -127,7 +151,7 @@ int MboxCreate(int slots, int slot_size)
       MailBoxTable[i].openSlots = slots;
       MailBoxTable[i].slotSize = slot_size;
       id = i;
-      availableSlots -= slots;
+      //availableSlots -= slots;//Slots are only considered full when they hold a message
       break;
     }
   }
@@ -141,14 +165,17 @@ int MboxRelease(int mailboxID)
   disableInterrupts();
   if(MailBoxTable[mailboxID].mboxID == -1)
   {
+    enableInterrupts();
     return -1;
   }
   mailboxPtr box = getMbox(mailboxID);
   mboxProcPtr temp = box->waitListHead;
-  if(temp == NULL)
+  /*if(temp == NULL)
   {
+    enableInterrupts();
     return 0;
-  }
+  }*/
+  box->mboxID = -1;
   while(temp != NULL)
   {
     temp->status = 13;
@@ -157,10 +184,14 @@ int MboxRelease(int mailboxID)
     temp = temp->nextmboxProcPtr;
   }
 
+  resetBox(mailboxID);
+  
   if(isZapped())
   {
+    enableInterrupts();
     return -3;
   }
+  enableInterrupts();
   return 0;
 }
 /* ------------------------------------------------------------------------
@@ -175,15 +206,18 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
 {
   check_kernel_mode("MboxSend");
   disableInterrupts();
-  if(mbox_id < 0 || mbox_id > MAXMBOX || msg_size > MAX_MESSAGE)
+  mailboxPtr box = getMbox(mbox_id);
+  if(mbox_id < 0 || mbox_id >= MAXMBOX || msg_size > MAX_MESSAGE || box->slotSize < msg_size
+    || box->mboxID < 0)
   {
     if(debugflag2 && DEBUG2)
     {
       USLOSS_Console("Sending Parameter errors\n");
     }
+    enableInterrupts();
     return -1;
   }
-  mailboxPtr box = getMbox(mbox_id);
+  
   /*Im thinking we may want two wait lists, one for blocked senders
   and one for blocked recievers, at the same time though I feel like
   we should never have both, if we have blocked recievers its because the 
@@ -194,13 +228,21 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
   if(box->waitListHead != NULL && box->waitListHead->status == 11)//recieve blocked
   {
     mboxProcPtr proc = box->waitListHead;
+    if(proc->messageSize < msg_size)
+    {
+      proc->messageSize = msg_size;
+      removeWaitList(mbox_id);
+      unblockProc(proc->pid);
+      return -1;
+    }
     memcpy(proc->procMessagePtr, msg_ptr, msg_size);
     proc->messageSize = msg_size;
     int pid = box->waitListHead->pid;
     removeWaitList(mbox_id);
     unblockProc(pid);
+    return 0;
   }
-  if(box->openSlots <= 0)
+  if(box->openSlots <= 0)//should prolly change this to just == 0
   {
     setProc(getpid(), mbox_id, msg_ptr, msg_size, 12);
     addWaitList(mbox_id, getpid() %50);
@@ -208,15 +250,60 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
     disableInterrupts();
     if(procTable2[getpid() % 50].status == 13)
     {
+      enableInterrupts();
       return -3;
     }
+    enableInterrupts();
+    return 0;//Weve been unblocked, message should already be in a slot iffy here
   }
-  assignSlot(mbox_id, msg_ptr, msg_size);
-  box->openSlots--;
+  //We blocked because no slots, and are now unblocked so we should get a slot
+  //This needs to run if we have an open slot, but not for 0 slot mailboxes 
+  //coming off a block.  But also should run if we werent blocked and have
+  //an open slot
+  if(box->maxSlots > 0)
+  {
+    assignSlot(mbox_id, msg_ptr, msg_size);
+    box->openSlots--;
+  }
+  
 
   enableInterrupts();
   return 0;
 } /* MboxSend */
+
+int MboxCondSend(int mbox_id, void *msg_ptr, int msg_size)
+{
+  check_kernel_mode("MboxCondSend\n");
+  disableInterrupts();
+  mailboxPtr box = getMbox(mbox_id);
+  if(mbox_id < 0 || mbox_id >= MAXMBOX || msg_size > MAX_MESSAGE || 
+    box->mboxID < 0) //|| ((box->slotSize > msg_size) && box->maxSlots > 0)
+  {
+    if(DEBUG2 && debugflag2)
+    {
+      USLOSS_Console("Cond Send Parameter Errors\n");
+    }
+    enableInterrupts();
+    return -1;
+  }
+  
+  
+  //0 slot mailbox with recievers blocked
+  if(box->waitListHead != NULL && box->waitListHead->status == 11)
+  {
+
+  }
+  else if(box->openSlots < 1 || availableSlots < 1)
+  {
+    return -2;
+  }
+  if(isZapped())
+  {
+    return -3;
+  }
+
+  return MboxSend(mbox_id, msg_ptr, msg_size);//Should be 0 here
+}
 
 void assignSlot(int mbox_id, void *msg_ptr, int msg_size)
 {
@@ -288,19 +375,25 @@ int MboxReceive(int mbox_id, void *msg_ptr, int msg_size)
   check_kernel_mode("MboxRecieve");
   disableInterrupts();
   int actualSize;
-  if(mbox_id < 0 || mbox_id > MAXMBOX || msg_size > MAX_MESSAGE || msg_size < 0)
+  mailboxPtr box = getMbox(mbox_id);
+  if(mbox_id < 0 || mbox_id >= MAXMBOX || msg_size > MAX_MESSAGE || 
+    box->mboxID < 0)
   {
     if(debugflag2 && DEBUG2)
     {
-      USLOSS_Console("Sending Parameter errors\n");
+      USLOSS_Console("Recieve Parameter errors\n");
     }
+    enableInterrupts();
     return -1;
   }
-  mailboxPtr box = getMbox(mbox_id);
 
   if(box->slotListHead != NULL)//We have a slot with a message in it???
   {
     slotPtr slot = box->slotListHead;
+    if(slot->messageSize > msg_size)
+    {
+      return -1;
+    }
     memcpy(msg_ptr, slot->slotMessage, msg_size);
     actualSize = slot->messageSize;
     freeSlot(mbox_id, slot);
@@ -310,21 +403,36 @@ int MboxReceive(int mbox_id, void *msg_ptr, int msg_size)
       int pid = box->waitListHead->pid;
       removeWaitList(mbox_id);
       unblockProc(pid);
+      disableInterrupts();
     }
   }
-  else if(box->slotListHead == NULL && box->waitListHead != NULL)//0 slot mailbox
+  //0 slot mailbox
+  else if(box->slotListHead == NULL && box->waitListHead != NULL && box->waitListHead->status != 11)//Sender blocked on 0 slot mailbox
   {
     if(DEBUG2 && debugflag2)
     {
-      USLOSS_Console("Recieiving on 0 slot mailbox\n");
+      USLOSS_Console("Recieiving on 0 slot mailbox with Sender blocked\n");
     }
+    int pid = box->waitListHead->pid;
+    actualSize = box->waitListHead->messageSize;
+    memcpy(msg_ptr, box->waitListHead->procMessagePtr, actualSize);
+    removeWaitList(mbox_id);
+    unblockProc(pid);
+    disableInterrupts();
   }
-  else
+  else//add to the wait list and get blocked
   {
     setProc(getpid(), mbox_id, msg_ptr, msg_size, 11);
     addWaitList(mbox_id, getpid() %50);
     blockMe(11);
     disableInterrupts();
+
+    if(procTable2[getpid() % 50].messageSize > msg_size)
+    {
+      cleanUpProc(getpid() %50);
+      enableInterrupts();
+      return -1;
+    }
     actualSize = procTable2[getpid() % 50].messageSize;
   }
   int status = procTable2[getpid() % 50].status;
@@ -334,6 +442,47 @@ int MboxReceive(int mbox_id, void *msg_ptr, int msg_size)
       return -3;
   return actualSize;//Actual message size
 } /* MboxReceive */
+
+int MboxCondReceive(int mbox_id, void *msg_ptr, int msg_size)
+{
+  check_kernel_mode("MboxCondReceive\n");
+  disableInterrupts();
+  mailboxPtr box = getMbox(mbox_id);
+  if(mbox_id < 0 || mbox_id >= MAXMBOX || msg_size > MAX_MESSAGE || box->mboxID < 0)
+  {
+    if(debugflag2 && DEBUG2)
+    {
+      USLOSS_Console("MboxCondReceive paramter errors\n");
+    }
+    enableInterrupts();
+    return -1;
+  }
+
+  if(box->slotListHead == NULL)//No message in slots
+  {
+    if(box->waitListHead != NULL && box->waitListHead->status == 12)//Send Blocked 0 slot mbox case
+    {
+      //Sender blocked on 0 slot mailbox
+      //Receive the message
+      //Probably gonna have to tweak some stuff in recieve
+      MboxReceive(mbox_id, msg_ptr, msg_size);
+    }
+    else
+    {
+      enableInterrupts();
+      return -2;
+    }
+  }
+  if(isZapped())
+  {
+    enableInterrupts();
+    return -3;
+  }
+
+  return MboxReceive(mbox_id, msg_ptr, msg_size);
+}
+
+
 void freeSlot(int mbox_id, slotPtr slot)
 {
   mailboxPtr box = getMbox(mbox_id);
@@ -370,6 +519,7 @@ void enableInterrupts()
     else
       // We ARE in kernel mode
       USLOSS_PsrSet(USLOSS_PsrGet() | USLOSS_PSR_CURRENT_INT);//enable interrupts
+    
 }/*enableInterrupts*/
 
 void check_kernel_mode(char *procName)
@@ -391,9 +541,24 @@ void initMailBoxTable()
     MailBoxTable[i].waitListTail = NULL;
     MailBoxTable[i].slotListHead = NULL;
     MailBoxTable[i].slotListTail = NULL;
+    MailBoxTable[i].maxSlots = -1;
+    MailBoxTable[i].slotSize = -1;
+    MailBoxTable[i].openSlots = -1;
   }
 }
 
+void resetBox(int mailboxID)
+  {
+    mailboxPtr box = getMbox(mailboxID);
+    box->mboxID = -1;
+    box->waitListHead = NULL;
+    box->waitListTail = NULL;
+    box->slotListHead = NULL;
+    box->slotListTail = NULL;
+    box->maxSlots = -1;
+    box->slotSize = -1;
+    box->openSlots = -1;
+  }
 void initMailSlots()
 {
   int i;
@@ -460,6 +625,7 @@ void addWaitList(int mbox_id, int procPID)
 void removeWaitList(int mbox_id)
 {
   mailboxPtr box = getMbox(mbox_id);
+  mboxProcPtr proc = box->waitListHead;
   if(box->waitListHead == box->waitListTail)//if only one on waitlist
   {
     box->waitListHead = box->waitListHead->nextmboxProcPtr;
@@ -467,6 +633,10 @@ void removeWaitList(int mbox_id)
   }
   else
     box->waitListHead = box->waitListHead->nextmboxProcPtr;
+  if(box->openSlots > 0)
+  {
+    assignSlot(mbox_id, proc->procMessagePtr, proc->messageSize);
+  }
 }
 
 int availableSlotCount()
@@ -485,5 +655,159 @@ int availableSlotCount()
 
 int check_io()
 {//Supposed to see if io mailboxes have anyone waiting
-  return 0;//Tmemporary
+  int i;
+  for(i = 0; i < 7; i++)
+  {
+    if(MailBoxTable[i].waitListHead != NULL)
+    {
+      if(debugflag2 && DEBUG2)
+      {
+        USLOSS_Console("Check_io found a process on mailbox %d waiting\n", i);
+      }
+      return 1;
+    }
+  }
+  return 0;
 }
+
+// type = interrupt device type, unit = # of device (when more than one),
+// status = where interrupt handler puts device's status register.
+int waitDevice(int type, int unit, int *status)
+{
+  if(DEBUG2 && debugflag2)
+  {
+    //dumpProcesses();
+  }
+  switch(type)
+  {
+    case USLOSS_CLOCK_INT:
+      MboxReceive(0, status, 50);
+      break;
+    case USLOSS_TERM_INT:
+      MboxReceive(unit + 1, status, 50);//units are 0-3
+      break;
+    case USLOSS_DISK_INT:
+      MboxReceive(unit + 5, status, 50);//If unit is 0 and 1 this will go to box 5 or 6
+      break;
+    case USLOSS_SYSCALL_INT:
+      USLOSS_Console("SYScall wait device??\n");
+      break;
+    default:
+      USLOSS_Console("DOH!!!\n");
+  }
+  if(isZapped())
+  {
+    return -1;
+  }
+  return 0;
+}
+
+/* -------------------------- Interrupt Handlers ------------------------------------- */
+
+void nullsys(systemArgs *args)
+{
+    USLOSS_Console("nullsys(): Invalid syscall %d. Halting...\n", args->number);
+    USLOSS_Halt(1);
+} /* nullsys */
+
+
+void clockHandler2(int dev, void *arg)
+{
+   if (DEBUG2 && debugflag2)
+      USLOSS_Console("clockHandler2(): called\n");
+    //dumpProcesses();
+    if(dev != USLOSS_CLOCK_INT)
+    { 
+      USLOSS_Console("Clock Handler called on non clock device\n");
+      USLOSS_Halt(1);
+    }
+
+    //if(USLOSS_Clock() - readCurStart_time() > 80000)//undefined reference to start time?
+      timeSlice();
+    static int count = 0;
+    count++;
+    if(DEBUG2 && debugflag2)
+    {
+      USLOSS_Console("Clock Count = %d\n", count);
+    }
+    if(count == 5)
+    {
+      int status;
+      count = 0;
+      USLOSS_DeviceInput(dev, 0, &status);
+      MboxCondSend(0, &status, sizeof(status));//Box 0
+    }
+
+} /* clockHandler */
+
+
+void diskHandler(int dev, void *arg)//Dev should be 2
+{
+   if (DEBUG2 && debugflag2)
+      USLOSS_Console("diskHandler(): called\n");
+    int unit = *((int *) arg);//Yeah this doesnt work
+    if(dev != USLOSS_DISK_INT || unit > 2)
+    {
+      USLOSS_Console("Disk Handler called on non clock device\n");
+      USLOSS_Halt(1);
+    }
+    int status;
+    
+    USLOSS_DeviceInput(dev, unit, &status);
+    if(unit == 0)
+      MboxCondSend(5, &status, sizeof(status));//Boxes 5-6
+    else
+      MboxCondSend(6, &status, sizeof(status));
+} /* diskHandler */
+
+
+void termHandler(int dev, void *arg)//Is arg unit?
+{
+   if (DEBUG2 && debugflag2)
+      USLOSS_Console("termHandler(): called\n");
+    long temp = *((long *)arg);//This doesnt work either
+    USLOSS_Console("%ld\n", temp);
+    if(dev != USLOSS_TERM_INT)
+    {
+      USLOSS_Console("Terminal Handler called on non clock device\n");
+      USLOSS_Halt(1);
+    }
+    int status;
+    
+    USLOSS_DeviceInput(dev, 1, &status);//second parameter is unit
+    int box;
+    switch(1)
+    {
+      case 0:
+        box = 1;
+        break;
+      case 1:
+        box = 2;
+        break;
+      case 2:
+        box = 3;
+        break;
+      case 3:
+        box = 4;
+        break;
+      default:
+        USLOSS_Console("Error bad Unit in Term Handler\n");
+    }
+    MboxCondSend(box, &status, sizeof(status));//Boxes 1-4*/
+
+} /* termHandler */
+
+
+void syscallHandler(int dev, void *arg)
+{
+   if (DEBUG2 && debugflag2)
+      USLOSS_Console("syscallHandler(): called\n");
+    if(dev != USLOSS_SYSCALL_INT)
+    {
+      USLOSS_Console("Syscall Handler called on non clock device\n");
+      USLOSS_Halt(1);
+    }
+    //systemArgs sArgs = *((systemArgs*)arg);
+    //systemCallVec[sArgs.number].(sArgs);//So how do we invoke the handler?
+
+} /* syscallHandler */
